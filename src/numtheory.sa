@@ -1,0 +1,274 @@
+# quantum-equations / numtheory — integer equations
+#
+#   NumTheory.linearDiophantine(3, 5, 1)       # {"x0": 2, "y0": -1, "dx": 5, "dy": -3}   3x + 5y = 1
+#   NumTheory.linearCongruence(3, 4, 7)        # [6]                                      3x = 4 (mod 7)
+#   NumTheory.crt([2, 3, 2], [3, 5, 7])        # {"x": 23, "modulus": 105}
+#   NumTheory.pell(7)                          # {"x": 8, "y": 3}                         x^2 - 7y^2 = 1
+#
+# Integers are exact up to 2^53 (about 9.0e15), the limit of a double.
+# Exposes the global: NumTheory
+
+# @use ./core.sa
+
+class __NumTheory {
+    fn init() {
+        self.LIMIT = 9007199254740991
+        self.MR_BASES = [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37]
+    }
+
+    # ── gcd family ───────────────────────────────────────────────────────
+
+    # Extended Euclid: {"g", "x", "y"} with a x + b y = g = gcd(a, b).
+    fn extGcd(a, b) {
+        let r0 = a
+        let r1 = b
+        let s0 = 1
+        let s1 = 0
+        let t0 = 0
+        let t1 = 1
+        while r1 != 0 {
+            let q = floor(r0 / r1)
+            let r2 = r0 - q * r1
+            r0 = r1
+            r1 = r2
+            let s2 = s0 - q * s1
+            s0 = s1
+            s1 = s2
+            let t2 = t0 - q * t1
+            t0 = t1
+            t1 = t2
+        }
+        if r0 < 0 {
+            r0 = -r0
+            s0 = -s0
+            t0 = -t0
+        }
+        return {"g": r0, "x": s0, "y": t0}
+    }
+
+    fn modInverse(a, m) {
+        let e = self.extGcd(Num.mod(a, m), m)
+        if e["g"] != 1 { raise "no modular inverse: gcd(" + str(a) + ", " + str(m) + ") = " + str(e["g"]) }
+        return Num.mod(e["x"], m)
+    }
+
+    # (a * b) mod m without losing precision (safe while m < 2^52).
+    fn mulMod(a, b, m) {
+        a = Num.mod(a, m)
+        b = Num.mod(b, m)
+        if a * b < 9007199254740991 { return (a * b) % m }
+        let result = 0
+        while b > 0 {
+            if b % 2 == 1 { result = (result + a) % m }
+            a = (a * 2) % m
+            b = floor(b / 2)
+        }
+        return result
+    }
+
+    # base^exp mod m
+    fn modPow(base, exp, m) {
+        if m == 1 { return 0 }
+        let result = 1
+        base = Num.mod(base, m)
+        while exp > 0 {
+            if exp % 2 == 1 { result = self.mulMod(result, base, m) }
+            base = self.mulMod(base, base, m)
+            exp = floor(exp / 2)
+        }
+        return result
+    }
+
+    # ── equations ────────────────────────────────────────────────────────
+
+    # Integer solutions of a x + b y = c.
+    # null when none exist, else {"x0", "y0", "dx", "dy"}: every solution is
+    # (x0 + dx t, y0 + dy t) for integer t.
+    fn linearDiophantine(a, b, c) {
+        if a == 0 and b == 0 {
+            if c == 0 { return {"x0": 0, "y0": 0, "dx": 1, "dy": 0, "any": true} }
+            return null
+        }
+        let e = self.extGcd(a, b)
+        if c % e["g"] != 0 { return null }
+        let k = c / e["g"]
+        return {
+            "x0": e["x"] * k,
+            "y0": e["y"] * k,
+            "dx": b / e["g"],
+            "dy": -a / e["g"]
+        }
+    }
+
+    # Smallest non-negative solution of a x + b y = c with x, y >= 0, or null.
+    fn smallestPositiveDiophantine(a, b, c) {
+        let s = self.linearDiophantine(a, b, c)
+        if s == null or a <= 0 or b <= 0 { return null }
+        # x = x0 + dx t >= 0  ->  t >= -x0 / dx
+        let t = ceil(-s["x0"] / s["dx"])
+        let x = s["x0"] + s["dx"] * t
+        let y = s["y0"] + s["dy"] * t
+        if y < 0 { return null }
+        return {"x": x, "y": y}
+    }
+
+    # All x in [0, m) with a x = b (mod m).
+    fn linearCongruence(a, b, m) {
+        let g = Num.gcd(a, m)
+        if b % g != 0 { return [] }
+        let a1 = a / g
+        let b1 = b / g
+        let m1 = m / g
+        let x0 = Num.mod(self.modInverse(a1, m1) * b1, m1)
+        let out = []
+        for k in range(g) { out.push(x0 + k * m1) }
+        return out
+    }
+
+    # Chinese remainder theorem for x = r_i (mod m_i). Moduli need not be
+    # coprime. Returns {"x", "modulus"} or null when inconsistent.
+    fn crt(remainders, moduli) {
+        let x = Num.mod(remainders[0], moduli[0])
+        let m = moduli[0]
+        for i in range(1, len(moduli)) {
+            let mi = moduli[i]
+            let ri = remainders[i]
+            let e = self.extGcd(m, mi)
+            let diff = ri - x
+            if diff % e["g"] != 0 { return null }
+            let lcm = m / e["g"] * mi
+            let step = self.mulMod(Num.mod(diff / e["g"], mi / e["g"]), Num.mod(e["x"], mi / e["g"]), mi / e["g"])
+            x = Num.mod(x + m * step, lcm)
+            m = lcm
+        }
+        return {"x": x, "modulus": m}
+    }
+
+    # Fundamental solution of Pell's equation x^2 - n y^2 = 1, read off the
+    # continued fraction of sqrt(n) (no squaring, so exact up to 2^53).
+    # null for perfect squares or when the solution exceeds 2^53.
+    fn pell(n) {
+        let a0 = floor(sqrt(n))
+        if a0 * a0 == n { return null }
+        # period length r of the continued fraction
+        let m = 0
+        let d = 1
+        let a = a0
+        let r = 0
+        while a != 2 * a0 {
+            m = d * a - m
+            d = (n - m * m) / d
+            a = floor((a0 + m) / d)
+            r = r + 1
+        }
+        let target = r % 2 == 0 ? r - 1 : 2 * r - 1
+        m = 0
+        d = 1
+        a = a0
+        let hPrev = 1
+        let h = a0
+        let kPrev = 0
+        let k = 1
+        for i in range(target) {
+            m = d * a - m
+            d = (n - m * m) / d
+            a = floor((a0 + m) / d)
+            let hn = a * h + hPrev
+            let kn = a * k + kPrev
+            hPrev = h
+            h = hn
+            kPrev = k
+            k = kn
+            if h > 9007199254740991 { return null }
+        }
+        return {"x": h, "y": k}
+    }
+
+    # ── primes & factors ─────────────────────────────────────────────────
+
+    # Deterministic Miller-Rabin for n < 2^53.
+    fn isPrime(n) {
+        if n < 2 { return false }
+        for p in self.MR_BASES {
+            if n == p { return true }
+            if n % p == 0 { return false }
+        }
+        let d = n - 1
+        let r = 0
+        while d % 2 == 0 {
+            d = d / 2
+            r = r + 1
+        }
+        for a in self.MR_BASES {
+            let x = self.modPow(a, d, n)
+            if x == 1 or x == n - 1 { continue }
+            let composite = true
+            for i in range(r - 1) {
+                x = self.mulMod(x, x, n)
+                if x == n - 1 {
+                    composite = false
+                    break
+                }
+            }
+            if composite { return false }
+        }
+        return true
+    }
+
+    # Prime factors with repetition, ascending: 360 -> [2, 2, 2, 3, 3, 5].
+    fn factorize(n) {
+        let out = []
+        if n < 2 { return out }
+        while n % 2 == 0 {
+            out.push(2)
+            n = n / 2
+        }
+        let p = 3
+        while p * p <= n {
+            while n % p == 0 {
+                out.push(p)
+                n = n / p
+            }
+            p = p + 2
+        }
+        if n > 1 { out.push(n) }
+        return out
+    }
+
+    # Euler's totient.
+    fn totient(n) {
+        let result = n
+        let seen = {}
+        for p in self.factorize(n) {
+            if not (str(p) in seen) {
+                seen[str(p)] = true
+                result = result / p * (p - 1)
+            }
+        }
+        return result
+    }
+
+    # Pythagorean triples (a < b < c) with c <= limit.
+    fn pythagoreanTriples(limit) {
+        let out = []
+        for m in range(2, floor(sqrt(limit)) + 1) {
+            for n in range(1, m) {
+                if (m - n) % 2 == 1 and Num.gcd(m, n) == 1 {
+                    let a = m * m - n * n
+                    let b = 2 * m * n
+                    let c = m * m + n * n
+                    let k = 1
+                    while c * k <= limit {
+                        let x = a * k
+                        let y = b * k
+                        out.push(x < y ? [x, y, c * k] : [y, x, c * k])
+                        k = k + 1
+                    }
+                }
+            }
+        }
+        return out
+    }
+}
+
+NumTheory = __NumTheory()
