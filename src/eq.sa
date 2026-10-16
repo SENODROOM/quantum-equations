@@ -80,8 +80,8 @@ class __Eq {
             return [val]
         }
         if not Expr.contains(node, v) {
-            let known = Expr.compile(node, [], vars)
-            return null == null ? [Expr.build(node)(self.withConstants(vars))] : null
+            # a constant subtree: evaluate it with the given symbol values
+            return [Expr.build(node)(vars)]
         }
         if t == "neg" {
             let inner = self.polyOf(node["a"], v, vars)
@@ -111,12 +111,6 @@ class __Eq {
             }
         }
         return null
-    }
-
-    fn withConstants(vars) {
-        let env = {}
-        for k in vars.keys() { env[k] = vars[k] }
-        return env
     }
 
     # Coefficients of "x^2 + 2x + 1" in x (highest first), or null.
