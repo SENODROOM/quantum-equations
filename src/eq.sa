@@ -1,0 +1,447 @@
+# quantum-equations / eq — solve equations written as text
+#
+#   Eq.solve("x^2 - 5x + 6 = 0")["roots"]                  # [2, 3]
+#   Eq.solve("cos(x) = x")["roots"]                        # [0.7390851332...]
+#   Eq.solve("2x + y = 5; x - y = 1")  -> use solveSystem(["2x + y = 5", "x - y = 1"], ["x", "y"])
+#   Eq.expand("(x + 1)^3")                                 # "x^3 + 3x^2 + 3x + 1"
+#   Eq.taylor("sin(x)", "x", 0, 5)["text"]                 # "x - 0.166667x^3 + 0.008333x^5"
+#
+# Polynomial equations (any degree) are solved exactly: closed forms or
+# iteration with multiplicities reported, complex roots included. Anything
+# else (trig, exp, log, mixed) is solved numerically by scanning an
+# interval for sign changes. Systems are solved exactly when linear
+# (unique / none / infinite) and by damped Newton from several starts when not.
+#
+# Exposes the global: Eq
+
+# @use ./core.sa
+# @use ./complex.sa
+# @use ./linalg.sa
+# @use ./poly.sa
+# @use ./calculus.sa
+# @use ./solve.sa
+# @use ./expr.sa
+
+class __Eq {
+    fn init() {
+        self.SCAN_RANGE = [-100, 100]
+        self.SCAN_STEPS = 4000
+    }
+
+    # ── thin wrappers over Expr ──────────────────────────────────────────
+
+    fn evaluate(src, vars) { return Expr.evaluate(src, vars) }
+    fn compile(src, names, fixed) { return Expr.compile(src, names, fixed) }
+    fn simplify(src) { return Expr.simplify(src) }
+    fn show(src) { return Expr.show(src) }
+    fn derivative(src, variable, order) { return Expr.derivative(src, variable, order) }
+    fn variables(src) { return Expr.variables(src) }
+
+    # ── equations ────────────────────────────────────────────────────────
+
+    # "lhs = rhs" -> {"lhs", "rhs"}; text without "=" is taken as "... = 0".
+    fn splitEquation(src) {
+        let parts = src.split("=")
+        if len(parts) == 1 { return {"lhs": src, "rhs": "0"} }
+        if len(parts) != 2 or parts[0].trim() == "" or parts[1].trim() == "" {
+            raise "an equation needs exactly one '=' with something on both sides: " + src
+        }
+        return {"lhs": parts[0], "rhs": parts[1]}
+    }
+
+    # Tree for lhs - rhs.
+    fn residual(src) {
+        let sides = self.splitEquation(src)
+        return Expr.mkBin("-", Expr.parse(sides["lhs"]), Expr.parse(sides["rhs"]))
+    }
+
+    # Does the equation hold (within tolerance) for these values?
+    fn check(src, vars, tol) {
+        if tol == null { tol = 1e-9 }
+        let sides = self.splitEquation(src)
+        let l = Expr.evaluate(sides["lhs"], vars)
+        let r = Expr.evaluate(sides["rhs"], vars)
+        return {"holds": abs(l - r) <= tol * max(1, abs(l), abs(r)), "lhs": l, "rhs": r}
+    }
+
+    # ── polynomial view of a formula ─────────────────────────────────────
+
+    # Coefficients (highest degree first) of the formula as a polynomial in v,
+    # or null if it is not one. Other symbols must be given in `vars`.
+    fn polyOf(node, v, vars) {
+        let t = node["t"]
+        if t == "num" { return [node["v"]] }
+        if t == "var" {
+            let name = node["n"]
+            if name == v { return [1, 0] }
+            let val = vars.get(name)
+            if val == null { val = Expr.CONSTANTS.get(name) }
+            if val == null { raise "unknown symbol '" + name + "' (pass a value for it in vars)" }
+            return [val]
+        }
+        if not Expr.contains(node, v) {
+            let known = Expr.compile(node, [], vars)
+            return null == null ? [Expr.build(node)(self.withConstants(vars))] : null
+        }
+        if t == "neg" {
+            let inner = self.polyOf(node["a"], v, vars)
+            if inner == null { return null }
+            return Poly.neg(inner)
+        }
+        if t == "bin" {
+            let a = self.polyOf(node["a"], v, vars)
+            if a == null { return null }
+            let b = self.polyOf(node["b"], v, vars)
+            if b == null { return null }
+            let op = node["op"]
+            if op == "+" { return Poly.add(a, b) }
+            if op == "-" { return Poly.sub(a, b) }
+            if op == "*" { return Poly.mul(a, b) }
+            if op == "/" {
+                let d = Poly.trim(b)
+                if len(d) != 1 or d[0] == 0 { return null }
+                return Poly.scale(a, 1 / d[0])
+            }
+            if op == "^" {
+                let e = Poly.trim(b)
+                if len(e) != 1 { return null }
+                let k = e[0]
+                if k != floor(k) or k < 0 or k > 64 { return null }
+                return Poly.pow(a, k)
+            }
+        }
+        return null
+    }
+
+    fn withConstants(vars) {
+        let env = {}
+        for k in vars.keys() { env[k] = vars[k] }
+        return env
+    }
+
+    # Coefficients of "x^2 + 2x + 1" in x (highest first), or null.
+    fn toPoly(src, v, vars) {
+        if vars == null { vars = {} }
+        return self.polyOf(Expr.parse(src), v, vars)
+    }
+
+    # Expands a polynomial formula: "(x + 1)^3" -> "x^3 + 3x^2 + 3x + 1".
+    fn expand(src, v, vars) {
+        if vars == null { vars = {} }
+        if v == null {
+            let free = Expr.variables(src)
+            if len(free) != 1 { raise "expand: name the variable (found " + str(len(free)) + ")" }
+            v = free[0]
+        }
+        let p = self.toPoly(src, v, vars)
+        if p == null { raise "expand: not a polynomial in " + v }
+        return Poly.show(p, v, 10)
+    }
+
+    # ── solving one equation ─────────────────────────────────────────────
+
+    # Solves an equation in one unknown.
+    #   Eq.solve("x^2 = 2")                       exact polynomial solution
+    #   Eq.solve("a x + b = 0", "x", {"a": 2, "b": -6})
+    #   Eq.solve("sin(x) = 0.5", "x", {}, {"range": [0, 7]})
+    # Result: {"variable", "method" ("polynomial" | "numeric"), "roots" (real,
+    # ascending), "complex" (non-real roots), "multiplicities", "degree",
+    # "polynomial", "identity" (true when every x works)}.
+    # Options (numeric): "range" [lo, hi] (default [-100, 100]), "steps",
+    # "guess" (use Newton from this start instead of scanning).
+    fn solve(src, variable, vars, options) {
+        if vars == null { vars = {} }
+        if options == null { options = {} }
+        let node = self.residual(src)
+        if variable == null {
+            let free = []
+            for name in Expr.variables(node) {
+                if not (name in vars) { free.push(name) }
+            }
+            if len(free) != 1 {
+                raise "solve: name the unknown (the equation has " + str(len(free)) + " free symbols: " + free.join(", ") + ")"
+            }
+            variable = free[0]
+        }
+        let poly = self.polyOf(node, variable, vars)
+        if poly != null { return self.solvePolynomial(poly, variable) }
+        return self.solveNumeric(node, variable, vars, options)
+    }
+
+    fn solvePolynomial(poly, variable) {
+        let scale = 0
+        for c in poly { scale = max(scale, abs(c)) }
+        let p = Poly.trim(poly, 1e-12 * scale)
+        let deg = len(p) - 1
+        let result = {
+            "variable": variable, "method": "polynomial", "degree": deg, "polynomial": p,
+            "roots": [], "multiplicities": [], "complex": [], "identity": false
+        }
+        if deg == 0 {
+            result["identity"] = abs(p[0]) <= 1e-12 * max(1, scale)
+            return result
+        }
+        let groups = Poly.distinctRoots(p)
+        for g in groups {
+            let z = g["root"]
+            if Complex.isReal(z, 1e-9) {
+                result["roots"].push(Num.clean(z["re"], 1e-12))
+                result["multiplicities"].push(g["multiplicity"])
+            } else {
+                result["complex"].push(z)
+            }
+        }
+        return result
+    }
+
+    fn solveNumeric(node, variable, vars, options) {
+        let f = Expr.compile(node, variable, vars)
+        let result = {
+            "variable": variable, "method": "numeric", "degree": null, "polynomial": null,
+            "roots": [], "multiplicities": [], "complex": [], "identity": false
+        }
+        let found = []
+        if options.get("guess") != null {
+            found = [Solve.newton(f, options["guess"])]
+        } else {
+            let range = options.get("range", self.SCAN_RANGE)
+            let steps = options.get("steps", self.SCAN_STEPS)
+            found = Solve.findRoots(f, range[0], range[1], steps)
+        }
+        for r in found {
+            let fr = abs(f(r))
+            let h = 1e-3 * max(1, abs(r))
+            let near = max(abs(f(r - h)), abs(f(r + h)))
+            if not isNaN(fr) and fr <= 1e-6 * max(1, near) {
+                result["roots"].push(r)
+                result["multiplicities"].push(1)
+            }
+        }
+        return result
+    }
+
+    # Brent root of an equation inside a bracket.
+    fn root(src, variable, lo, hi, vars) {
+        if vars == null { vars = {} }
+        return Solve.brent(Expr.compile(self.residual(src), variable, vars), lo, hi)
+    }
+
+    # ── systems ──────────────────────────────────────────────────────────
+
+    # Solves several equations in several unknowns.
+    #   Eq.solveSystem(["x + y = 3", "x - y = 1"], ["x", "y"])
+    #     -> {"type": "unique", "solution": {"x": 2, "y": 1}, "linear": true}
+    # Linear systems report "unique", "none" or "infinite" (with "particular"
+    # solution and the "free" unknowns). Nonlinear systems return every
+    # distinct solution found: {"type": "nonlinear", "solutions": [...]}.
+    # Options: "vars" (values for other symbols), "guess" (starting point array).
+    fn solveSystem(eqs, names, options) {
+        if options == null { options = {} }
+        let fixed = options.get("vars", {})
+        let n = len(eqs)
+        let m = len(names)
+        let funcs = []
+        for e in eqs { funcs.push(Expr.compileVector(self.residual(e), names, fixed)) }
+
+        # --- is it linear? build A x = b from the residuals
+        let zero = []
+        for j in range(m) { zero.push(0) }
+        let f0 = []
+        for i in range(n) { f0.push(funcs[i](zero)) }
+        let a = []
+        for i in range(n) {
+            let row = []
+            for j in range(m) {
+                let unit = zero.slice(0)
+                unit[j] = 1
+                row.push(funcs[i](unit) - f0[i])
+            }
+            a.push(row)
+        }
+        let linear = true
+        for probeIndex in range(2) {
+            let probe = []
+            for j in range(m) { probe.push(probeIndex == 0 ? 0.37 + 0.61 * j : -1.9 + 0.83 * j) }
+            for i in range(n) {
+                let predicted = f0[i]
+                for j in range(m) { predicted = predicted + a[i][j] * probe[j] }
+                let actual = funcs[i](probe)
+                if isNaN(actual) or abs(actual - predicted) > 1e-8 * (1 + abs(actual)) { linear = false }
+            }
+        }
+        if linear {
+            let b = f0.map(fn(v) { return -v })
+            let an = LinAlg.analyze(a, b)
+            if an["type"] == "unique" {
+                return {"type": "unique", "linear": true, "solution": self.named(names, an["solution"])}
+            }
+            if an["type"] == "none" { return {"type": "none", "linear": true} }
+            let freeNames = []
+            for j in an["free"] { freeNames.push(names[j]) }
+            return {
+                "type": "infinite", "linear": true, "rank": an["rank"],
+                "particular": self.named(names, an["particular"]), "free": freeNames
+            }
+        }
+
+        if n != m { raise "solveSystem: a nonlinear system needs as many equations as unknowns" }
+        let starts = []
+        if options.get("guess") != null {
+            starts.push(options["guess"])
+        } else {
+            starts = self.startingPoints(m)
+        }
+        let solutions = []
+        for s in starts {
+            let x = self.newtonDamped(funcs, s)
+            if x != null {
+                let dup = false
+                for known in solutions {
+                    let dist = 0
+                    for j in range(m) { dist = max(dist, abs(known[j] - x[j])) }
+                    if dist < 1e-6 * max(1, LinAlg.norm(x)) { dup = true }
+                }
+                if not dup { solutions.push(x) }
+            }
+        }
+        let named = []
+        for s in solutions { named.push(self.named(names, s)) }
+        return {"type": "nonlinear", "linear": false, "solutions": named}
+    }
+
+    fn named(names, values) {
+        let out = {}
+        for j in range(len(names)) { out[names[j]] = Num.clean(values[j], 1e-10) }
+        return out
+    }
+
+    fn startingPoints(m) {
+        let scales = [1, -1, 2, -2, 0.5, -0.5, 5, -5, 10, -10, 0.1]
+        let pts = []
+        for s in scales {
+            let flat = []
+            let alt = []
+            let alt2 = []
+            for j in range(m) {
+                flat.push(s)
+                alt.push(j % 2 == 0 ? s : -s)
+                alt2.push(j % 2 == 0 ? -s : s)
+            }
+            pts.push(flat)
+            if m > 1 {
+                pts.push(alt)
+                pts.push(alt2)
+            }
+        }
+        return pts
+    }
+
+    fn maxAbs(v) {
+        let s = 0
+        for x in v { s = max(s, abs(x)) }
+        return s
+    }
+
+    # Damped Newton that never raises. Returns the solution array or null.
+    fn newtonDamped(funcs, start) {
+        let n = len(funcs)
+        let x = start.slice(0)
+        let fx = []
+        for f in funcs { fx.push(f(x)) }
+        let size = self.maxAbs(fx)
+        for it in range(100) {
+            if isNaN(size) { return null }
+            if size < 1e-12 { return x }
+            let jac = Calc.jacobian(funcs, x)
+            let an = LinAlg.analyze(jac, fx.map(fn(v) { return -v }))
+            if an["type"] != "unique" { return null }
+            let step = an["solution"]
+            let lambda = 1
+            let accepted = false
+            for tries in range(40) {
+                let xn = []
+                for j in range(n) { xn.push(x[j] + lambda * step[j]) }
+                let fn2 = []
+                for f in funcs { fn2.push(f(xn)) }
+                let sz = self.maxAbs(fn2)
+                if not isNaN(sz) and sz < (1 - 1e-4 * lambda) * size {
+                    x = xn
+                    fx = fn2
+                    size = sz
+                    accepted = true
+                    break
+                }
+                lambda = lambda / 2
+            }
+            if not accepted {
+                return size < 1e-9 ? x : null
+            }
+        }
+        return size < 1e-9 ? x : null
+    }
+
+    # ── analysis helpers ─────────────────────────────────────────────────
+
+    # [[x, f(x)], ...] for x from `first` to `last` in steps of `step`.
+    fn table(src, variable, first, last, step, vars) {
+        let f = Expr.compile(src, variable, vars)
+        let count = floor((last - first) / step + 1e-9)
+        let rows = []
+        for i in range(count + 1) {
+            let x = first + i * step
+            rows.push([x, f(x)])
+        }
+        return rows
+    }
+
+    fn integral(src, variable, a, b, vars) {
+        return Calc.integrate(Expr.compile(src, variable, vars), a, b)
+    }
+
+    fn limit(src, variable, at, vars) {
+        return Calc.limit(Expr.compile(src, variable, vars), at)
+    }
+
+    # Taylor polynomial of order n around a, from exact symbolic derivatives.
+    # Returns {"coefficients" (ascending powers of (x - a)), "text"}.
+    fn taylor(src, variable, a, n) {
+        let node = Expr.parse(src)
+        let coeffs = []
+        let fact = 1
+        for k in range(n + 1) {
+            if k > 0 { fact = fact * k }
+            let value = Expr.compile(node, variable)(a)
+            coeffs.push(value / fact)
+            if k < n { node = Expr.simplifyNode(Expr.diff(node, variable)) }
+        }
+        let label = variable
+        if a > 0 { label = "(" + variable + " - " + Num.fmt(a, 6) + ")" }
+        if a < 0 { label = "(" + variable + " + " + Num.fmt(-a, 6) + ")" }
+        return {"coefficients": coeffs, "text": Poly.show(coeffs.slice(0).reverse(), label, 6)}
+    }
+
+    # Do two formulas agree at a spread of sample points?
+    fn equivalent(first, second, vars) {
+        let names = Expr.variables(first)
+        for v in Expr.variables(second) {
+            if not (v in names) { names.push(v) }
+        }
+        let f = Expr.compileVector(first, names, vars)
+        let g = Expr.compileVector(second, names, vars)
+        let samples = [0.37, -1.21, 2.13, 0.83, -0.59, 1.77, 3.1, -2.4, 0.11, 1.3]
+        let checked = 0
+        for k in range(len(samples)) {
+            let point = []
+            for j in range(len(names)) { point.push(samples[(k + 3 * j) % len(samples)]) }
+            let x = f(point)
+            let y = g(point)
+            if Num.isFinite(x) and Num.isFinite(y) {
+                checked = checked + 1
+                if abs(x - y) > 1e-8 * max(1, abs(x), abs(y)) { return false }
+            }
+        }
+        return checked > 0
+    }
+}
+
+Eq = __Eq()

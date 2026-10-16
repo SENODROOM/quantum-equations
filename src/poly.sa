@@ -227,6 +227,60 @@ class __Poly {
         return self.sortRoots(out)
     }
 
+    # Roots grouped by multiplicity -> [{"root": complex, "multiplicity": m}, ...].
+    # Clusters from the iteration are re-solved as simple roots of the
+    # (m-1)-th derivative, so repeated roots come out accurate (x^2 - 2x + 1
+    # gives exactly 1 with multiplicity 2).
+    fn distinctRoots(p) {
+        let rs = self.roots(p)
+        let n = len(rs)
+        let used = []
+        for i in range(n) { used.push(false) }
+        let out = []
+        let q = self.trim(p, 0)
+        for i in range(n) {
+            if used[i] { continue }
+            used[i] = true
+            let cluster = [rs[i]]
+            let reach = 5e-4 * max(1, Complex.abs(rs[i]))
+            for j in range(i + 1, n) {
+                if not used[j] and Complex.abs(Complex.sub(rs[j], rs[i])) < reach {
+                    used[j] = true
+                    cluster.push(rs[j])
+                }
+            }
+            let m = len(cluster)
+            let sumRe = 0
+            let sumIm = 0
+            for z in cluster {
+                sumRe = sumRe + z["re"]
+                sumIm = sumIm + z["im"]
+            }
+            let center = Complex.make(sumRe / m, sumIm / m)
+            let spread = 0
+            for z in cluster { spread = max(spread, Complex.abs(Complex.sub(z, center))) }
+            if m > 1 and spread > 0 {
+                let dq = q
+                for k in range(m - 1) { dq = self.derivative(dq) }
+                let ddq = self.derivative(dq)
+                let z = center
+                for step in range(60) {
+                    let slope = self.evaluateComplex(ddq, z)
+                    if Complex.abs(slope) < 1e-300 { break }
+                    let dz = Complex.div(self.evaluateComplex(dq, z), slope)
+                    z = Complex.sub(z, dz)
+                    if Complex.abs(dz) < 1e-15 * max(1, Complex.abs(z)) { break }
+                }
+                if Complex.abs(Complex.sub(z, center)) < 1e-2 * max(1, Complex.abs(center)) { center = z }
+            }
+            out.push({
+                "root": Complex.make(Num.clean(center["re"], 1e-12), Num.clean(center["im"], 1e-12)),
+                "multiplicity": m
+            })
+        }
+        return out
+    }
+
     # Order roots by real part, then imaginary part.
     fn sortRoots(rs) {
         let out = rs.slice(0)
