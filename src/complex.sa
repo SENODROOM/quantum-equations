@@ -1,0 +1,213 @@
+# quantum-equations / complex — complex numbers as {"re", "im"} dictionaries
+#
+#   z = Complex.make(3, 4)
+#   Complex.abs(z)                                    # 5
+#   Complex.show(Complex.sqrt(Complex.make(-4, 0)))   # "2i"
+#   Complex.show(Complex.mul(z, Complex.conj(z)))     # "25"
+#
+# Every function also accepts plain numbers where a complex is expected.
+# Exposes the global: Complex
+
+# @use ./core.sa
+
+class __Complex {
+    fn init() {
+        self.I = {"re": 0, "im": 1}
+    }
+
+    fn make(re, im) {
+        if im == null { im = 0 }
+        return {"re": re, "im": im}
+    }
+
+    # Coerces a number (or complex) to a complex dict.
+    fn of(x) {
+        if type(x) == "dict" { return x }
+        return {"re": x, "im": 0}
+    }
+
+    fn fromPolar(r, theta) {
+        return {"re": r * Math.cos(theta), "im": r * Math.sin(theta)}
+    }
+
+    fn isReal(z, eps) {
+        if eps == null { eps = 1e-9 }
+        z = self.of(z)
+        return Math.abs(z["im"]) <= eps * max(1, Math.abs(z["re"]))
+    }
+
+    fn equals(a, b, eps) {
+        a = self.of(a)
+        b = self.of(b)
+        return Num.approx(a["re"], b["re"], eps) and Num.approx(a["im"], b["im"], eps)
+    }
+
+    # ── arithmetic ───────────────────────────────────────────────────────
+
+    fn add(a, b) {
+        a = self.of(a)
+        b = self.of(b)
+        return {"re": a["re"] + b["re"], "im": a["im"] + b["im"]}
+    }
+
+    fn sub(a, b) {
+        a = self.of(a)
+        b = self.of(b)
+        return {"re": a["re"] - b["re"], "im": a["im"] - b["im"]}
+    }
+
+    fn mul(a, b) {
+        a = self.of(a)
+        b = self.of(b)
+        return {
+            "re": a["re"] * b["re"] - a["im"] * b["im"],
+            "im": a["re"] * b["im"] + a["im"] * b["re"]
+        }
+    }
+
+    fn scale(a, k) {
+        a = self.of(a)
+        return {"re": a["re"] * k, "im": a["im"] * k}
+    }
+
+    fn div(a, b) {
+        a = self.of(a)
+        b = self.of(b)
+        let d = b["re"] * b["re"] + b["im"] * b["im"]
+        if d == 0 { raise "complex division by zero" }
+        return {
+            "re": (a["re"] * b["re"] + a["im"] * b["im"]) / d,
+            "im": (a["im"] * b["re"] - a["re"] * b["im"]) / d
+        }
+    }
+
+    fn neg(a) {
+        a = self.of(a)
+        return {"re": -a["re"], "im": -a["im"]}
+    }
+
+    fn conj(a) {
+        a = self.of(a)
+        return {"re": a["re"], "im": -a["im"]}
+    }
+
+    fn recip(a) { return self.div({"re": 1, "im": 0}, a) }
+
+    # ── magnitude & angle ────────────────────────────────────────────────
+
+    fn abs(a) {
+        a = self.of(a)
+        return Math.hypot(a["re"], a["im"])
+    }
+
+    fn arg(a) {
+        a = self.of(a)
+        return atan2(a["im"], a["re"])
+    }
+
+    # ── powers, roots, exponentials ──────────────────────────────────────
+
+    fn exp(a) {
+        a = self.of(a)
+        let m = Num.exp(a["re"])
+        return {"re": m * Math.cos(a["im"]), "im": m * Math.sin(a["im"])}
+    }
+
+    # Principal natural logarithm.
+    fn ln(a) {
+        a = self.of(a)
+        if a["re"] == 0 and a["im"] == 0 { raise "ln(0) is undefined" }
+        return {"re": log(self.abs(a)), "im": self.arg(a)}
+    }
+
+    # Principal square root.
+    fn sqrt(a) {
+        a = self.of(a)
+        let m = self.abs(a)
+        let re = Math.sqrt((m + a["re"]) / 2)
+        let im = Math.sqrt((m - a["re"]) / 2)
+        if a["im"] < 0 { im = -im }
+        return {"re": re, "im": im}
+    }
+
+    # Integer powers by repeated squaring (exact); negative n -> reciprocal.
+    fn powInt(a, n) {
+        a = self.of(a)
+        if n < 0 { return self.recip(self.powInt(a, -n)) }
+        let result = {"re": 1, "im": 0}
+        let base = a
+        while n > 0 {
+            if n % 2 == 1 { result = self.mul(result, base) }
+            base = self.mul(base, base)
+            n = floor(n / 2)
+        }
+        return result
+    }
+
+    # General power a^b (b real or complex), principal branch.
+    fn pow(a, b) {
+        a = self.of(a)
+        if type(b) == "number" and b == floor(b) and Math.abs(b) <= 1024 {
+            return self.powInt(a, b)
+        }
+        b = self.of(b)
+        if a["re"] == 0 and a["im"] == 0 {
+            if b["re"] > 0 { return {"re": 0, "im": 0} }
+            raise "0 raised to a non-positive power"
+        }
+        return self.exp(self.mul(b, self.ln(a)))
+    }
+
+    # All n complex n-th roots of a.
+    fn roots(a, n) {
+        a = self.of(a)
+        let out = []
+        let r = Math.pow(self.abs(a), 1 / n)
+        let th = self.arg(a)
+        for k in range(n) {
+            out.push(self.fromPolar(r, (th + 2 * PI * k) / n))
+        }
+        return out
+    }
+
+    # ── trigonometry ─────────────────────────────────────────────────────
+
+    fn sin(a) {
+        a = self.of(a)
+        return {"re": Math.sin(a["re"]) * Num.cosh(a["im"]), "im": Math.cos(a["re"]) * Num.sinh(a["im"])}
+    }
+
+    fn cos(a) {
+        a = self.of(a)
+        return {"re": Math.cos(a["re"]) * Num.cosh(a["im"]), "im": -Math.sin(a["re"]) * Num.sinh(a["im"])}
+    }
+
+    # ── display ──────────────────────────────────────────────────────────
+
+    # "3 + 4i", "2i", "-1.5", "0".
+    fn show(a, digits) {
+        a = self.of(a)
+        if digits == null { digits = 6 }
+        let re = Num.clean(a["re"], 1e-12)
+        let im = Num.clean(a["im"], 1e-12)
+        if im == 0 { return Num.fmt(re, digits) }
+        let imText = Num.fmt(Math.abs(im), digits)
+        if imText == "1" { imText = "" }
+        imText = imText + "i"
+        if re == 0 {
+            if im < 0 { return "-" + imText }
+            return imText
+        }
+        let joiner = im < 0 ? " - " : " + "
+        return Num.fmt(re, digits) + joiner + imText
+    }
+
+    # A plain number when the value is (numerically) real, else a cleaned complex.
+    fn simplify(a, eps) {
+        a = self.of(a)
+        if self.isReal(a, eps) { return Num.clean(a["re"]) }
+        return {"re": Num.clean(a["re"]), "im": Num.clean(a["im"])}
+    }
+}
+
+Complex = __Complex()

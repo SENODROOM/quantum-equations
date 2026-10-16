@@ -1,0 +1,328 @@
+# quantum-equations / poly — polynomials as coefficient arrays, highest degree first
+#
+#   p = [1, -3, 2]                        # x^2 - 3x + 2
+#   Poly.evaluate(p, 5)                   # 12
+#   Poly.derivative(p)                    # [2, -3]
+#   Poly.show(Poly.mul([1, 1], [1, -1]))  # "x^2 - 1"
+#   Poly.realRoots([1, -6, 11, -6])       # [1, 2, 3]
+#
+# Exposes the global: Poly
+
+# @use ./core.sa
+# @use ./complex.sa
+# @use ./linalg.sa
+
+class __Poly {
+    fn init() {
+        self.ZERO_TOL = 1e-12
+    }
+
+    # Drops leading zero coefficients (keeps at least one).
+    fn trim(p, tol) {
+        if tol == null { tol = 0 }
+        let start = 0
+        while start < len(p) - 1 and abs(p[start]) <= tol { start = start + 1 }
+        return p.slice(start)
+    }
+
+    fn degree(p) { return len(self.trim(p)) - 1 }
+
+    fn isZero(p) {
+        let t = self.trim(p)
+        return len(t) == 1 and t[0] == 0
+    }
+
+    # ── evaluation ───────────────────────────────────────────────────────
+
+    # Horner's rule.
+    fn evaluate(p, x) {
+        let r = 0
+        for c in p { r = r * x + c }
+        return r
+    }
+
+    fn evaluateComplex(p, z) {
+        let r = Complex.make(0, 0)
+        for c in p { r = Complex.add(Complex.mul(r, z), c) }
+        return r
+    }
+
+    # ── algebra ──────────────────────────────────────────────────────────
+
+    fn add(a, b) {
+        let n = max(len(a), len(b))
+        let out = []
+        for i in range(n) {
+            let x = i - (n - len(a)) >= 0 ? a[i - (n - len(a))] : 0
+            let y = i - (n - len(b)) >= 0 ? b[i - (n - len(b))] : 0
+            out.push(x + y)
+        }
+        return self.trim(out)
+    }
+
+    fn neg(a) { return a.map(fn(c) { return -c }) }
+
+    fn sub(a, b) { return self.add(a, self.neg(b)) }
+
+    fn scale(a, k) { return a.map(fn(c) { return c * k }) }
+
+    fn mul(a, b) {
+        let out = []
+        for i in range(len(a) + len(b) - 1) { out.push(0) }
+        for i in range(len(a)) {
+            for j in range(len(b)) { out[i + j] = out[i + j] + a[i] * b[j] }
+        }
+        return self.trim(out)
+    }
+
+    fn pow(a, n) {
+        let result = [1]
+        for i in range(n) { result = self.mul(result, a) }
+        return result
+    }
+
+    # Polynomial long division -> {"quotient", "remainder"}.
+    fn divide(a, b) {
+        let d = self.trim(b)
+        if len(d) == 1 and d[0] == 0 { raise "polynomial division by zero" }
+        let rem = self.trim(a).slice(0)
+        let dn = len(d)
+        if len(rem) < dn { return {"quotient": [0], "remainder": rem} }
+        let q = []
+        let steps = len(rem) - dn + 1
+        for i in range(steps) {
+            let f = rem[i] / d[0]
+            q.push(f)
+            for j in range(dn) { rem[i + j] = rem[i + j] - f * d[j] }
+        }
+        return {"quotient": q, "remainder": self.trim(rem.slice(steps), 1e-12)}
+    }
+
+    # p(q(x))
+    fn compose(p, q) {
+        let r = [0]
+        for c in p { r = self.add(self.mul(r, q), [c]) }
+        return r
+    }
+
+    fn derivative(p) {
+        let n = len(p) - 1
+        if n <= 0 { return [0] }
+        let out = []
+        for i in range(n) { out.push(p[i] * (n - i)) }
+        return out
+    }
+
+    # Antiderivative with constant term c.
+    fn integral(p, c) {
+        if c == null { c = 0 }
+        let n = len(p)
+        let out = []
+        for i in range(n) { out.push(p[i] / (n - i)) }
+        out.push(c)
+        return out
+    }
+
+    # Definite integral over [a, b].
+    fn integrate(p, a, b) {
+        let anti = self.integral(p, 0)
+        return self.evaluate(anti, b) - self.evaluate(anti, a)
+    }
+
+    # Monic polynomial with the given roots (real or complex). Real result
+    # coefficients when the roots come in conjugate pairs.
+    fn fromRoots(roots) {
+        let acc = [Complex.make(1, 0)]
+        for r in roots {
+            let next = []
+            for i in range(len(acc) + 1) { next.push(Complex.make(0, 0)) }
+            for i in range(len(acc)) {
+                next[i] = Complex.add(next[i], acc[i])
+                next[i + 1] = Complex.sub(next[i + 1], Complex.mul(acc[i], r))
+            }
+            acc = next
+        }
+        let out = []
+        for c in acc { out.push(Num.clean(c["re"], 1e-12)) }
+        return out
+    }
+
+    # ── roots ────────────────────────────────────────────────────────────
+
+    # All complex roots (Durand-Kerner iteration, Newton-polished).
+    # Repeated roots converge more slowly and are accurate to ~1e-5.
+    fn roots(p) {
+        let q = self.trim(p, 0)
+        let out = []
+        # exact zero roots
+        while len(q) > 1 and q[len(q) - 1] == 0 {
+            q = q.slice(0, len(q) - 1)
+            out.push(Complex.make(0, 0))
+        }
+        let n = len(q) - 1
+        if n < 1 { return out }
+        if n == 1 {
+            out.push(Complex.make(-q[1] / q[0], 0))
+            return out
+        }
+        let lead = q[0]
+        let c = q.map(fn(x) { return x / lead })
+        if n == 2 {
+            let disc = c[1] * c[1] - 4 * c[2]
+            if disc >= 0 {
+                let s = sqrt(disc)
+                # numerically stable form
+                let t = -0.5 * (c[1] + (c[1] >= 0 ? s : -s))
+                let r1 = t
+                let r2 = t != 0 ? c[2] / t : 0
+                if t == 0 { r1 = 0 }
+                out.push(Complex.make(r1, 0))
+                out.push(Complex.make(r2, 0))
+            } else {
+                let s = sqrt(-disc)
+                out.push(Complex.make(-c[1] / 2, s / 2))
+                out.push(Complex.make(-c[1] / 2, -s / 2))
+            }
+            return self.sortRoots(out)
+        }
+        let bound = 0
+        for i in range(1, n + 1) {
+            if abs(c[i]) > bound { bound = abs(c[i]) }
+        }
+        let radius = 1 + bound
+        radius = min(radius, 1 + pow(abs(c[n]), 1 / n) * 2)
+        let zs = []
+        for k in range(n) {
+            let ang = 2 * PI * k / n + 0.4
+            zs.push(Complex.make(radius * 0.5 * cos(ang), radius * 0.5 * sin(ang)))
+        }
+        for iter in range(1000) {
+            let worst = 0
+            for i in range(n) {
+                let num = self.evaluateComplex(c, zs[i])
+                let den = Complex.make(1, 0)
+                for j in range(n) {
+                    if j != i { den = Complex.mul(den, Complex.sub(zs[i], zs[j])) }
+                }
+                if Complex.abs(den) == 0 {
+                    den = Complex.make(1e-12, 1e-12)
+                }
+                let delta = Complex.div(num, den)
+                zs[i] = Complex.sub(zs[i], delta)
+                let size = Complex.abs(delta) / max(1, Complex.abs(zs[i]))
+                if size > worst { worst = size }
+            }
+            if worst < 1e-15 { break }
+        }
+        # Newton polish
+        let dc = self.derivative(c)
+        for i in range(n) {
+            for step in range(3) {
+                let dv = self.evaluateComplex(dc, zs[i])
+                if Complex.abs(dv) > 1e-14 {
+                    zs[i] = Complex.sub(zs[i], Complex.div(self.evaluateComplex(c, zs[i]), dv))
+                }
+            }
+        }
+        for z in zs { out.push(Complex.make(Num.clean(z["re"], 1e-13), Num.clean(z["im"], 1e-13))) }
+        return self.sortRoots(out)
+    }
+
+    # Order roots by real part, then imaginary part.
+    fn sortRoots(rs) {
+        let out = rs.slice(0)
+        let n = len(out)
+        for i in range(n) {
+            for j in range(i + 1, n) {
+                let a = out[i]
+                let b = out[j]
+                let swap = false
+                if abs(a["re"] - b["re"]) > 1e-9 * max(1, abs(a["re"])) {
+                    swap = b["re"] < a["re"]
+                } else {
+                    swap = b["im"] < a["im"]
+                }
+                if swap {
+                    out[i] = b
+                    out[j] = a
+                }
+            }
+        }
+        return out
+    }
+
+    # Real roots only, ascending. Complex-conjugate pairs are skipped.
+    fn realRoots(p) {
+        let out = []
+        for z in self.roots(p) {
+            if abs(z["im"]) <= 1e-7 * max(1, abs(z["re"])) { out.push(z["re"]) }
+        }
+        out.sort()
+        return out
+    }
+
+    # ── fitting ──────────────────────────────────────────────────────────
+
+    # Polynomial through every point (Newton divided differences).
+    fn interpolate(xs, ys) {
+        let n = len(xs)
+        let dd = ys.slice(0)
+        let coef = [dd[0]]
+        for level in range(1, n) {
+            for i in range(n - 1, level - 1, -1) {
+                dd[i] = (dd[i] - dd[i - 1]) / (xs[i] - xs[i - level])
+            }
+            coef.push(dd[level])
+        }
+        let result = [coef[n - 1]]
+        for k in range(n - 2, -1, -1) {
+            result = self.add(self.mul(result, [1, -xs[k]]), [coef[k]])
+        }
+        return result
+    }
+
+    # Least-squares polynomial of degree `deg` through noisy points.
+    fn fit(xs, ys, deg) {
+        let a = []
+        for x in xs {
+            let row = []
+            for k in range(deg, -1, -1) { row.push(pow(x, k)) }
+            a.push(row)
+        }
+        return LinAlg.leastSquares(a, ys)
+    }
+
+    # ── display ──────────────────────────────────────────────────────────
+
+    # [1, -3, 2] -> "x^2 - 3x + 2"
+    fn show(p, variable, digits) {
+        if variable == null { variable = "x" }
+        if digits == null { digits = 6 }
+        let t = self.trim(p, 1e-14)
+        let n = len(t) - 1
+        let out = ""
+        for i in range(len(t)) {
+            let c = t[i]
+            if c == 0 and n > 0 { continue }
+            let pw = n - i
+            let mag = abs(c)
+            let body = ""
+            if pw == 0 {
+                body = Num.fmt(mag, digits)
+            } else {
+                if mag != 1 { body = Num.fmt(mag, digits) }
+                body = body + variable
+                if pw > 1 { body = body + "^" + str(pw) }
+            }
+            if out == "" {
+                out = (c < 0 ? "-" : "") + body
+            } else {
+                out = out + (c < 0 ? " - " : " + ") + body
+            }
+        }
+        if out == "" { return "0" }
+        return out
+    }
+}
+
+Poly = __Poly()
