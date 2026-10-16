@@ -190,7 +190,6 @@ class __Poly {
             if abs(c[i]) > bound { bound = abs(c[i]) }
         }
         let radius = 1 + bound
-        radius = min(radius, 1 + pow(abs(c[n]), 1 / n) * 2)
         let zs = []
         for k in range(n) {
             let ang = 2 * PI * k / n + 0.4
@@ -286,7 +285,7 @@ class __Poly {
         let a = []
         for x in xs {
             let row = []
-            for k in range(deg, -1, -1) { row.push(pow(x, k)) }
+            for k in range(deg, -1, -1) { row.push(Math.pow(x, k)) }
             a.push(row)
         }
         return LinAlg.leastSquares(a, ys)

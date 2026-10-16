@@ -1,0 +1,392 @@
+# quantum-equations / solve — closed-form and numeric equation solvers
+#
+#   Solve.linear(2, -6)                       # 3            (2x - 6 = 0)
+#   Solve.quadratic(1, -3, 2)                 # [1, 2]
+#   Solve.cubic(1, -6, 11, -6)                # [1, 2, 3]
+#   Solve.brent(fn(x) { return cos(x) - x }, 0, 1)    # 0.7390851332...
+#   Solve.newtonSystem([f1, f2], [1, 1])      # root of a nonlinear system
+#
+# Exposes the global: Solve
+
+# @use ./core.sa
+# @use ./complex.sa
+# @use ./linalg.sa
+# @use ./poly.sa
+
+class __Solve {
+    fn init() {
+        self.TOL = 1e-12
+        self.MAX_ITER = 200
+    }
+
+    # ── closed forms ─────────────────────────────────────────────────────
+
+    # a x + b = 0
+    fn linear(a, b) {
+        if a == 0 { raise b == 0 ? "infinitely many solutions" : "no solution" }
+        return -b / a
+    }
+
+    # Real roots of a x^2 + b x + c = 0, ascending and distinct.
+    fn quadratic(a, b, c) {
+        if a == 0 { return [self.linear(b, c)] }
+        let disc = b * b - 4 * a * c
+        if disc < 0 { return [] }
+        if disc == 0 { return [-b / (2 * a)] }
+        let s = sqrt(disc)
+        let t = -0.5 * (b + (b >= 0 ? s : -s))
+        let r1 = t / a
+        let r2 = c / t
+        if r1 > r2 { return [r2, r1] }
+        return [r1, r2]
+    }
+
+    # Both roots of a quadratic as complex numbers.
+    fn quadraticComplex(a, b, c) {
+        if a == 0 { raise "not a quadratic (a = 0)" }
+        return Poly.roots([a, b, c])
+    }
+
+    # Vertex of y = a x^2 + b x + c, with the discriminant.
+    fn vertex(a, b, c) {
+        let x = -b / (2 * a)
+        return {"x": x, "y": a * x * x + b * x + c, "discriminant": b * b - 4 * a * c}
+    }
+
+    # Real roots of a x^3 + b x^2 + c x + d = 0, ascending (trigonometric /
+    # hyperbolic Cardano solution, Newton-polished).
+    fn cubic(a, b, c, d) {
+        if a == 0 { return self.quadratic(b, c, d) }
+        let bb = b / a
+        let cc = c / a
+        let dd = d / a
+        let p = cc - bb * bb / 3
+        let q = 2 * bb * bb * bb / 27 - bb * cc / 3 + dd
+        let shift = bb / 3
+        let scale = max(1, abs(p), abs(q))
+        let disc = -(4 * p * p * p + 27 * q * q)
+        let ts = []
+        if abs(p) < 1e-14 * scale and abs(q) < 1e-14 * scale {
+            ts = [0]
+        } else if abs(disc) < 1e-12 * scale * scale * scale {
+            ts = [3 * q / p, -3 * q / (2 * p)]
+        } else if disc > 0 {
+            let m = 2 * sqrt(-p / 3)
+            let arg = 3 * q / (2 * p) * sqrt(-3 / p)
+            let th = acos(Num.clamp(arg, -1, 1)) / 3
+            for k in range(3) { ts.push(m * cos(th - 2 * PI * k / 3)) }
+        } else if p < 0 {
+            let arg = -3 * abs(q) / (2 * p) * sqrt(-3 / p)
+            let t0 = -2 * Num.sign(q) * sqrt(-p / 3) * Num.cosh(Num.acosh(arg) / 3)
+            ts = [t0]
+        } else {
+            let arg = 3 * q / (2 * p) * sqrt(3 / p)
+            ts = [-2 * sqrt(p / 3) * Num.sinh(Num.asinh(arg) / 3)]
+        }
+        let coeffs = [1, bb, cc, dd]
+        let dcoeffs = Poly.derivative(coeffs)
+        let out = []
+        for t in ts {
+            let x = t - shift
+            for step in range(3) {
+                let dv = Poly.evaluate(dcoeffs, x)
+                if abs(dv) > 1e-14 { x = x - Poly.evaluate(coeffs, x) / dv }
+            }
+            out.push(Num.clean(x, 1e-13))
+        }
+        out.sort()
+        return out
+    }
+
+    # Real roots of a x^4 + b x^3 + c x^2 + d x + e = 0.
+    fn quartic(a, b, c, d, e) {
+        if a == 0 { return self.cubic(b, c, d, e) }
+        return Poly.realRoots([a, b, c, d, e])
+    }
+
+    # All (complex) roots of any polynomial given highest degree first.
+    fn polynomial(coeffs) { return Poly.roots(coeffs) }
+
+    # Real roots only.
+    fn realPolynomial(coeffs) { return Poly.realRoots(coeffs) }
+
+    # ── bracketing root finders ──────────────────────────────────────────
+
+    fn bisection(f, lo, hi, tol, maxIter) {
+        if tol == null { tol = 1e-12 }
+        if maxIter == null { maxIter = 200 }
+        let flo = f(lo)
+        let fhi = f(hi)
+        if flo == 0 { return lo }
+        if fhi == 0 { return hi }
+        if flo * fhi > 0 { raise "bisection: f(lo) and f(hi) must have opposite signs" }
+        for i in range(maxIter) {
+            let mid = (lo + hi) / 2
+            let fm = f(mid)
+            if fm == 0 or (hi - lo) / 2 < tol { return mid }
+            if flo * fm < 0 {
+                hi = mid
+            } else {
+                lo = mid
+                flo = fm
+            }
+        }
+        return (lo + hi) / 2
+    }
+
+    # Brent's method: bisection's safety with secant/inverse-quadratic speed.
+    fn brent(f, lo, hi, tol, maxIter) {
+        if tol == null { tol = 1e-14 }
+        if maxIter == null { maxIter = 200 }
+        let a = lo
+        let b = hi
+        let fa = f(a)
+        let fb = f(b)
+        if fa == 0 { return a }
+        if fb == 0 { return b }
+        if fa * fb > 0 { raise "brent: f(lo) and f(hi) must have opposite signs" }
+        if abs(fa) < abs(fb) {
+            let t = a
+            a = b
+            b = t
+            t = fa
+            fa = fb
+            fb = t
+        }
+        let c = a
+        let fc = fa
+        let d = c
+        let mflag = true
+        for i in range(maxIter) {
+            if fb == 0 or abs(b - a) < tol { return b }
+            let s = 0
+            if fa != fc and fb != fc {
+                s = a * fb * fc / ((fa - fb) * (fa - fc))
+                s = s + b * fa * fc / ((fb - fa) * (fb - fc))
+                s = s + c * fa * fb / ((fc - fa) * (fc - fb))
+            } else {
+                s = b - fb * (b - a) / (fb - fa)
+            }
+            let lowBound = (3 * a + b) / 4
+            let cond1 = not ((s > min(lowBound, b)) and (s < max(lowBound, b)))
+            let cond2 = mflag and abs(s - b) >= abs(b - c) / 2
+            let cond3 = (not mflag) and abs(s - b) >= abs(c - d) / 2
+            let cond4 = mflag and abs(b - c) < tol
+            let cond5 = (not mflag) and abs(c - d) < tol
+            if cond1 or cond2 or cond3 or cond4 or cond5 {
+                s = (a + b) / 2
+                mflag = true
+            } else {
+                mflag = false
+            }
+            let fs = f(s)
+            d = c
+            c = b
+            fc = fb
+            if fa * fs < 0 {
+                b = s
+                fb = fs
+            } else {
+                a = s
+                fa = fs
+            }
+            if abs(fa) < abs(fb) {
+                let t2 = a
+                a = b
+                b = t2
+                t2 = fa
+                fa = fb
+                fb = t2
+            }
+        }
+        return b
+    }
+
+    # ── open root finders ────────────────────────────────────────────────
+
+    # Newton-Raphson. `df` may be null (numeric derivative is used).
+    fn newton(f, x0, df, tol, maxIter) {
+        if tol == null { tol = 1e-13 }
+        if maxIter == null { maxIter = 100 }
+        let x = x0
+        for i in range(maxIter) {
+            let fx = f(x)
+            if fx == 0 { return x }
+            let d = 0
+            if df == null {
+                d = Calc.derivative(f, x)
+            } else {
+                d = df(x)
+            }
+            if d == 0 { raise "newton: zero derivative at x = " + Num.fmt(x, 6) }
+            let nx = x - fx / d
+            if abs(nx - x) <= tol * max(1, abs(nx)) { return nx }
+            x = nx
+        }
+        raise "newton: did not converge in " + str(maxIter) + " iterations"
+    }
+
+    fn secant(f, x0, x1, tol, maxIter) {
+        if tol == null { tol = 1e-13 }
+        if maxIter == null { maxIter = 100 }
+        let a = x0
+        let b = x1
+        let fa = f(a)
+        let fb = f(b)
+        for i in range(maxIter) {
+            if fb == fa { raise "secant: flat step at x = " + Num.fmt(b, 6) }
+            let c = b - fb * (b - a) / (fb - fa)
+            a = b
+            fa = fb
+            b = c
+            fb = f(b)
+            if fb == 0 or abs(b - a) <= tol * max(1, abs(b)) { return b }
+        }
+        raise "secant: did not converge in " + str(maxIter) + " iterations"
+    }
+
+    # Solves x = g(x) by iteration.
+    fn fixedPoint(g, x0, tol, maxIter) {
+        if tol == null { tol = 1e-12 }
+        if maxIter == null { maxIter = 1000 }
+        let x = x0
+        for i in range(maxIter) {
+            let nx = g(x)
+            if abs(nx - x) <= tol * max(1, abs(nx)) { return nx }
+            x = nx
+        }
+        raise "fixedPoint: did not converge in " + str(maxIter) + " iterations"
+    }
+
+    # Every root of f in [lo, hi]: scans `steps` sub-intervals for sign
+    # changes and refines each with Brent. Even-multiplicity roots (where f
+    # only touches zero) are caught when a scan point lands within `tol`.
+    fn findRoots(f, lo, hi, steps) {
+        if steps == null { steps = 400 }
+        let out = []
+        let h = (hi - lo) / steps
+        let x0 = lo
+        let f0 = f(x0)
+        if f0 == 0 { out.push(x0) }
+        for i in range(1, steps + 1) {
+            let x1 = lo + h * i
+            let f1 = f(x1)
+            if f1 == 0 {
+                out.push(x1)
+            } else if f0 != 0 and f0 * f1 < 0 {
+                out.push(self.brent(f, x0, x1))
+            }
+            x0 = x1
+            f0 = f1
+        }
+        let clean = []
+        for r in out {
+            let dup = false
+            for c in clean {
+                if abs(c - r) < 1e-9 * max(1, abs(r)) { dup = true }
+            }
+            if not dup { clean.push(Num.clean(r, 1e-13)) }
+        }
+        clean.sort()
+        return clean
+    }
+
+    # ── optimisation ─────────────────────────────────────────────────────
+
+    # Minimum of a unimodal f on [lo, hi] -> {"x", "value"}.
+    fn minimize(f, lo, hi, tol) {
+        if tol == null { tol = 1e-10 }
+        let gr = (sqrt(5) - 1) / 2
+        let a = lo
+        let b = hi
+        let c = b - gr * (b - a)
+        let d = a + gr * (b - a)
+        let fc = f(c)
+        let fd = f(d)
+        for i in range(300) {
+            if abs(b - a) < tol { break }
+            if fc < fd {
+                b = d
+                d = c
+                fd = fc
+                c = b - gr * (b - a)
+                fc = f(c)
+            } else {
+                a = c
+                c = d
+                fc = fd
+                d = a + gr * (b - a)
+                fd = f(d)
+            }
+        }
+        let x = (a + b) / 2
+        return {"x": x, "value": f(x)}
+    }
+
+    fn maximize(f, lo, hi, tol) {
+        let r = self.minimize(fn(x) { return -f(x) }, lo, hi, tol)
+        return {"x": r["x"], "value": -r["value"]}
+    }
+
+    # ── systems ──────────────────────────────────────────────────────────
+
+    # Linear system A x = b (Gaussian elimination).
+    fn linearSystem(a, b) { return LinAlg.solve(a, b) }
+
+    # 2x2 by Cramer's rule: a1 x + b1 y = c1 ; a2 x + b2 y = c2
+    fn cramer2(a1, b1, c1, a2, b2, c2) {
+        let d = a1 * b2 - a2 * b1
+        if d == 0 { raise "cramer2: no unique solution" }
+        return [(c1 * b2 - c2 * b1) / d, (a1 * c2 - a2 * c1) / d]
+    }
+
+    # Gauss-Seidel iteration for diagonally dominant systems.
+    fn gaussSeidel(a, b, x0, tol, maxIter) {
+        if tol == null { tol = 1e-12 }
+        if maxIter == null { maxIter = 1000 }
+        let n = len(a)
+        let x = []
+        for i in range(n) { x.push(x0 == null ? 0 : x0[i]) }
+        for it in range(maxIter) {
+            let worst = 0
+            for i in range(n) {
+                let s = b[i]
+                for j in range(n) {
+                    if j != i { s = s - a[i][j] * x[j] }
+                }
+                let nx = s / a[i][i]
+                worst = max(worst, abs(nx - x[i]))
+                x[i] = nx
+            }
+            if worst < tol { return x }
+        }
+        raise "gaussSeidel: did not converge (is the matrix diagonally dominant?)"
+    }
+
+    # Newton's method for a nonlinear system. `fs` is an array of functions
+    # taking the unknowns as an array: fn(v) { return v[0]*v[0] + v[1] - 3 }.
+    fn newtonSystem(fs, x0, tol, maxIter) {
+        if tol == null { tol = 1e-12 }
+        if maxIter == null { maxIter = 100 }
+        let n = len(fs)
+        let x = x0.slice(0)
+        for it in range(maxIter) {
+            let fx = []
+            for fn_i in fs { fx.push(fn_i(x)) }
+            let size = 0
+            for v in fx { size = max(size, abs(v)) }
+            if size < tol { return x }
+            let jac = Calc.jacobian(fs, x)
+            let step = LinAlg.solve(jac, fx.map(fn(v) { return -v }))
+            let stepSize = 0
+            for i in range(n) {
+                x[i] = x[i] + step[i]
+                stepSize = max(stepSize, abs(step[i]))
+            }
+            if stepSize < tol * 1e-2 { return x }
+        }
+        raise "newtonSystem: did not converge in " + str(maxIter) + " iterations"
+    }
+}
+
+Solve = __Solve()
