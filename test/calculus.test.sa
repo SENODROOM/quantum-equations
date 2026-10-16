@@ -1,0 +1,93 @@
+# @use quantum-test
+# @use ../src/calculus.sa
+
+describe("Calc derivatives", fn() {
+    it("differentiates numerically", fn() {
+        expect(Calc.derivative(fn(x) { return x * x * x }, 2)).toBeCloseTo(12, 8)
+        expect(Calc.derivative(fn(x) { return sin(x) }, 0)).toBeCloseTo(1, 9)
+        expect(Calc.derivative(fn(x) { return Num.exp(x) }, 1)).toBeCloseTo(2.718281828459045, 8)
+        expect(Calc.derivative2(fn(x) { return x * x * x }, 2)).toBeCloseTo(12, 5)
+        expect(Calc.derivative2(fn(x) { return sin(x) }, PI / 2)).toBeCloseTo(-1, 5)
+    })
+    it("computes gradients, jacobians and hessians", fn() {
+        let f = fn(v) { return v[0] * v[0] * v[1] + v[1] }
+        let g = Calc.gradient(f, [2, 3])
+        expect(g[0]).toBeCloseTo(12, 6)
+        expect(g[1]).toBeCloseTo(5, 6)
+        let j = Calc.jacobian([fn(v) { return v[0] * v[1] }, fn(v) { return v[0] + v[1] }], [2, 3])
+        expect(j[0][0]).toBeCloseTo(3, 6)
+        expect(j[0][1]).toBeCloseTo(2, 6)
+        expect(j[1][0]).toBeCloseTo(1, 6)
+        let h = Calc.hessian(f, [2, 3])
+        expect(h[0][0]).toBeCloseTo(6, 3)
+        expect(h[0][1]).toBeCloseTo(4, 3)
+        expect(h[1][1]).toBeCloseTo(0, 3)
+    })
+    it("differentiates tabulated data", fn() {
+        let d = Calc.differentiate([0, 1, 2, 3], [0, 1, 4, 9])
+        expect(d[1]).toBe(2)
+        expect(d[2]).toBe(4)
+        expect(d[0]).toBe(1)
+        expect(d[3]).toBe(5)
+    })
+    it("evaluates limits", fn() {
+        expect(Calc.limit(fn(x) { return sin(x) / x }, 0)).toBeCloseTo(1, 6)
+        expect(Calc.limit(fn(x) { return (x * x - 1) / (x - 1) }, 1)).toBeCloseTo(2, 6)
+        expect(Calc.limit(fn(x) { return 1 / x }, 0)).toBeNull()
+        expect(Calc.limit(fn(x) { return x < 0 ? -1 : 1 }, 0)).toBeNull()
+        expect(Calc.limit(fn(x) { return pow(1 + x, 1 / x) }, 0)).toBeCloseTo(2.718281828, 2)
+    })
+})
+
+describe("Calc integrals", fn() {
+    it("integrates with every rule", fn() {
+        let sq = fn(x) { return x * x }
+        expect(Calc.trapezoid(sq, 0, 3, 3000)).toBeCloseTo(9, 5)
+        expect(Calc.simpson(sq, 0, 3)).toBeCloseTo(9, 12)
+        expect(Calc.adaptive(sq, 0, 3)).toBeCloseTo(9, 10)
+        expect(Calc.gauss(sq, 0, 3)).toBeCloseTo(9, 12)
+        expect(Calc.romberg(sq, 0, 3)).toBeCloseTo(9, 10)
+        expect(Calc.integrate(fn(x) { return sin(x) }, 0, PI)).toBeCloseTo(2, 10)
+        expect(Calc.integrate(sq, 3, 0)).toBeCloseTo(-9, 10)
+        expect(Calc.integrate(sq, 2, 2)).toBe(0)
+    })
+    it("handles tricky and infinite integrands", fn() {
+        expect(Calc.integrate(fn(x) { return 1 / x }, 1, Math.exp(1))).toBeCloseTo(1, 9)
+        expect(Calc.integrate(fn(x) { return sqrt(x) }, 0, 4)).toBeCloseTo(16 / 3, 6)
+        expect(Calc.integrate(fn(x) { return Num.exp(-x) }, 0, INF)).toBeCloseTo(1, 8)
+        expect(Calc.integrate(fn(x) { return Num.exp(-x * x) }, -INF, INF)).toBeCloseTo(sqrt(PI), 8)
+        expect(Calc.integrate(fn(x) { return 1 / (1 + x * x) }, 0, INF)).toBeCloseTo(PI / 2, 8)
+        expect(Calc.integrate(fn(x) { return Num.exp(x) }, -INF, 0)).toBeCloseTo(1, 8)
+    })
+    it("integrates data, areas and arc lengths", fn() {
+        expect(Calc.trapz([0, 1, 2], [0, 1, 4])).toBe(3)
+        expect(Calc.integrate2(fn(x, y) { return x * y }, 0, 2, 0, 3)).toBeCloseTo(9, 8)
+        expect(Calc.arcLength(fn(x) { return x }, 0, 1)).toBeCloseTo(sqrt(2), 8)
+        expect(Calc.arcLength(fn(x) { return sqrt(1 - x * x) }, -0.9999, 0.9999)).toBeCloseTo(2 * asin(0.9999), 2)
+        expect(Calc.sumSeries(fn(k) { return k }, 1, 100)).toBe(5050)
+        expect(Calc.productSeries(fn(k) { return k }, 1, 5)).toBe(120)
+    })
+})
+
+describe("Calc differential equations", fn() {
+    it("solves y' = y with Euler and RK4", fn() {
+        let f = fn(t, y) { return y }
+        let e = Calc.euler(f, 0, 1, 1, 10000)
+        expect(e["y"][10000]).toBeCloseTo(2.718281828, 3)
+        let r = Calc.rk4(f, 0, 1, 1, 100)
+        expect(len(r["t"])).toBe(101)
+        expect(r["y"][100]).toBeCloseTo(2.718281828459045, 8)
+        expect(Calc.solveIVP(f, 0, 1, 2)).toBeCloseTo(7.38905609893065, 9)
+    })
+    it("solves systems (harmonic oscillator)", fn() {
+        # y'' = -y  ->  [y, v]' = [v, -y]
+        let sys = fn(t, s) { return [s[1], -s[0]] }
+        let end = Calc.solveIVP(sys, 0, [1, 0], PI)
+        expect(end[0]).toBeCloseTo(-1, 8)
+        expect(end[1]).toBeCloseTo(0, 8)
+        let logistic = Calc.solveIVP(fn(t, y) { return y * (1 - y) }, 0, 0.1, 10)
+        expect(logistic).toBeCloseTo(1 / (1 + 9 * Num.exp(-10)), 8)
+    })
+})
+
+Test.report()

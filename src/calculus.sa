@@ -298,33 +298,6 @@ class __Calc {
         return p
     }
 
-    # Taylor-polynomial value of f around a, of order n, evaluated at x
-    # (derivatives estimated numerically, so keep n small: <= 6).
-    fn taylor(f, a, n, x) {
-        let total = f(a)
-        let coeffs = [f(a)]
-        let h = 0.05
-        let cur = []
-        let ys = []
-        for k in range(-n, n + 1) { ys.push(f(a + k * h)) }
-        # repeated central differences
-        let level = ys.slice(0)
-        let fact = 1
-        for order in range(1, n + 1) {
-            let next = []
-            for i in range(1, len(level) - 1) {
-                next.push(level[i + 1] - level[i - 1])
-            }
-            # each pass differentiates once with step 2h
-            let scaled = next.map(fn(v) { return v / (2 * h) })
-            level = scaled
-            let mid = floor(len(level) / 2)
-            fact = fact * order
-            total = total + level[mid] / fact * pow(x - a, order)
-        }
-        return total
-    }
-
     # ── differential equations ───────────────────────────────────────────
 
     # Forward Euler for y' = f(t, y). y may be a number or an array (system).

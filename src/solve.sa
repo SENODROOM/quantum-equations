@@ -12,6 +12,7 @@
 # @use ./complex.sa
 # @use ./linalg.sa
 # @use ./poly.sa
+# @use ./calculus.sa
 
 class __Solve {
     fn init() {

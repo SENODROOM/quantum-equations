@@ -1,0 +1,119 @@
+# @use quantum-test
+# @use ../src/solve.sa
+
+describe("Solve closed forms", fn() {
+    it("solves linear and quadratic equations", fn() {
+        expect(Solve.linear(2, -6)).toBe(3)
+        expect(fn() { Solve.linear(0, 5) }).toThrow()
+        expect(Solve.quadratic(1, -3, 2)).toEqual([1, 2])
+        expect(Solve.quadratic(1, 2, 1)).toEqual([-1])
+        expect(Solve.quadratic(1, 0, 1)).toEqual([])
+        expect(Solve.quadratic(0, 2, -4)).toEqual([2])
+        let r = Solve.quadratic(1, 1e8, 1)
+        expect(r[0]).toBeCloseTo(-1e8, 3)
+        expect(r[1] * 1e8).toBeCloseTo(-1, 6)
+        let c = Solve.quadraticComplex(1, 2, 5)
+        expect(Complex.show(c[0])).toBe("-1 - 2i")
+        expect(Complex.show(c[1])).toBe("-1 + 2i")
+        let v = Solve.vertex(1, -4, 7)
+        expect(v["x"]).toBe(2)
+        expect(v["y"]).toBe(3)
+    })
+    it("solves cubics of every kind", fn() {
+        let three = Solve.cubic(1, -6, 11, -6)
+        expect(three[0]).toBeCloseTo(1, 10)
+        expect(three[1]).toBeCloseTo(2, 10)
+        expect(three[2]).toBeCloseTo(3, 10)
+        let one = Solve.cubic(1, 0, 1, 0)
+        expect(one).toEqual([0])
+        let one2 = Solve.cubic(1, 0, 3, -4)
+        expect(one2[0]).toBeCloseTo(1, 10)
+        let one3 = Solve.cubic(1, 0, -3, 4)
+        expect(len(one3)).toBe(1)
+        expect(Poly.evaluate([1, 0, -3, 4], one3[0])).toBeCloseTo(0, 10)
+        expect(one3[0]).toBeCloseTo(-2.1958233456, 8)
+        let dbl = Solve.cubic(1, -5, 8, -4)
+        expect(dbl[0]).toBeCloseTo(1, 6)
+        expect(dbl[len(dbl) - 1]).toBeCloseTo(2, 6)
+        let trip = Solve.cubic(1, 0, 0, 0)
+        expect(trip).toEqual([0])
+        let scaled = Solve.cubic(2, -12, 22, -12)
+        expect(scaled[0]).toBeCloseTo(1, 9)
+        expect(scaled[2]).toBeCloseTo(3, 9)
+        let degenerate = Solve.cubic(0, 1, -3, 2)
+        expect(degenerate).toEqual([1, 2])
+    })
+    it("solves quartics and general polynomials", fn() {
+        let q = Solve.quartic(1, 0, -5, 0, 4)
+        expect(q[0]).toBeCloseTo(-2, 8)
+        expect(q[3]).toBeCloseTo(2, 8)
+        expect(len(Solve.polynomial([1, 0, 0, 0, 0, 1]))).toBe(5)
+        expect(Solve.realPolynomial([1, 0, 0, 1])[0]).toBeCloseTo(-1, 9)
+    })
+})
+
+describe("Solve numeric root finders", fn() {
+    it("brackets with bisection and Brent", fn() {
+        let f = fn(x) { return x * x - 2 }
+        expect(Solve.bisection(f, 0, 2)).toBeCloseTo(sqrt(2), 10)
+        expect(Solve.brent(f, 0, 2)).toBeCloseTo(sqrt(2), 12)
+        expect(Solve.brent(fn(x) { return cos(x) - x }, 0, 1)).toBeCloseTo(0.7390851332151607, 12)
+        expect(fn() { Solve.brent(f, 2, 3) }).toThrow()
+        expect(Solve.brent(fn(x) { return x * x * x - 8 }, 0, 5)).toBeCloseTo(2, 12)
+    })
+    it("uses Newton, secant and fixed-point iteration", fn() {
+        let f = fn(x) { return x * x * x - 2 * x - 5 }
+        expect(Solve.newton(f, 2)).toBeCloseTo(2.0945514815423265, 12)
+        expect(Solve.newton(f, 2, fn(x) { return 3 * x * x - 2 })).toBeCloseTo(2.0945514815423265, 12)
+        expect(Solve.secant(f, 2, 3)).toBeCloseTo(2.0945514815423265, 10)
+        expect(Solve.fixedPoint(fn(x) { return cos(x) }, 1)).toBeCloseTo(0.7390851332151607, 10)
+        expect(fn() { Solve.newton(fn(x) { return x * x + 1 }, 0) }).toThrow()
+    })
+    it("finds every root in an interval", fn() {
+        let r = Solve.findRoots(fn(x) { return sin(x) }, 1, 10)
+        expect(len(r)).toBe(3)
+        expect(r[0]).toBeCloseTo(PI, 10)
+        expect(r[2]).toBeCloseTo(3 * PI, 10)
+        let p = Solve.findRoots(fn(x) { return (x - 1) * (x - 2) * (x - 3) }, 0, 4)
+        expect(len(p)).toBe(3)
+        expect(p[1]).toBeCloseTo(2, 10)
+    })
+    it("optimises", fn() {
+        let m = Solve.minimize(fn(x) { return (x - 3) * (x - 3) + 1 }, 0, 10)
+        expect(m["x"]).toBeCloseTo(3, 6)
+        expect(m["value"]).toBeCloseTo(1, 10)
+        let mx = Solve.maximize(fn(x) { return -x * x + 4 * x }, 0, 10)
+        expect(mx["x"]).toBeCloseTo(2, 6)
+        expect(mx["value"]).toBeCloseTo(4, 10)
+    })
+})
+
+describe("Solve systems", fn() {
+    it("solves linear systems", fn() {
+        let x = Solve.linearSystem([[1, 1], [1, -1]], [3, 1])
+        expect(x[0]).toBeCloseTo(2)
+        expect(x[1]).toBeCloseTo(1)
+        let c = Solve.cramer2(2, 1, 5, 1, -1, 1)
+        expect(c[0]).toBeCloseTo(2)
+        expect(c[1]).toBeCloseTo(1)
+        let gs = Solve.gaussSeidel([[4, 1], [2, 5]], [9, 13])
+        expect(gs[0]).toBeCloseTo(32 / 18, 9)
+        expect(gs[1]).toBeCloseTo(34 / 18, 9)
+    })
+    it("solves nonlinear systems", fn() {
+        # circle x^2 + y^2 = 25 and line y = x + 1
+        let r = Solve.newtonSystem([
+            fn(v) { return v[0] * v[0] + v[1] * v[1] - 25 },
+            fn(v) { return v[1] - v[0] - 1 }
+        ], [3, 3])
+        expect(r[0]).toBeCloseTo(3, 8)
+        expect(r[1]).toBeCloseTo(4, 8)
+        let s = Solve.newtonSystem([
+            fn(v) { return v[0] * v[1] - 6 },
+            fn(v) { return v[0] + v[1] - 5 }
+        ], [1, 4])
+        expect(s[0] * s[1]).toBeCloseTo(6, 8)
+    })
+})
+
+Test.report()
