@@ -1,0 +1,814 @@
+# quantum-equations / expr — parse, evaluate, simplify and differentiate formulas
+#
+#   Expr.evaluate("3 + 4 * 2", {})                   # 11
+#   Expr.evaluate("2x^2 + sin(pi * x)", {"x": 0.5}) # 2.5
+#   Expr.derivative("x^2 * sin(x)", "x")             # "2x*sin(x) + x^2*cos(x)"
+#   Expr.simplify("x*1 + 0 + 2*3")                   # "x + 6"
+#   f = Expr.compile("x^3 - 2x", "x")                # a real function: f(2) = 4
+#
+# Syntax: numbers (1, 2.5, 1e-3), variables, constants pi e tau phi inf,
+# + - * / % ^ (also **), parentheses, postfix !, implicit multiplication
+# ("2x", "3(x+1)", "2pi", "(x+1)(x-1)"), and the functions listed in
+# Expr.FUNCTION_NAMES (sin, cos, ln, log, sqrt, abs, min, max, ...).
+# Unary minus binds looser than ^, so -2^2 = -4. `log(x)` is base 10,
+# `ln(x)` is natural, `log(x, b)` is base b. Division by zero gives
+# +-Infinity / NaN instead of raising.
+#
+# Exposes the globals: Expr, ExprParser
+
+# @use ./core.sa
+
+class __ExprParser {
+    fn init(tokens, funcNames) {
+        self.tokens = tokens
+        self.pos = 0
+        self.funcNames = funcNames
+    }
+
+    fn peek() {
+        if self.pos < len(self.tokens) { return self.tokens[self.pos] }
+        return {"k": "end", "v": ""}
+    }
+
+    fn advance() {
+        let t = self.peek()
+        self.pos = self.pos + 1
+        return t
+    }
+
+    fn isOp(v) {
+        let t = self.peek()
+        return t["k"] == "op" and t["v"] == v
+    }
+
+    fn expectOp(v) {
+        if not self.isOp(v) {
+            raise "expected '" + v + "' but found " + self.describe(self.peek())
+        }
+        self.advance()
+    }
+
+    fn describe(t) {
+        if t["k"] == "end" { return "end of input" }
+        return "'" + str(t["v"]) + "'"
+    }
+
+    fn parseAll() {
+        let node = self.parseExpr()
+        let t = self.peek()
+        if t["k"] != "end" { raise "unexpected " + self.describe(t) }
+        return node
+    }
+
+    # expr := term (('+' | '-') term)*
+    fn parseExpr() {
+        let left = self.parseTerm()
+        while self.isOp("+") or self.isOp("-") {
+            let op = self.advance()["v"]
+            let right = self.parseTerm()
+            left = {"t": "bin", "op": op, "a": left, "b": right}
+        }
+        return left
+    }
+
+    # term := unary (('*' | '/' | '%' | implicit) unary)*
+    fn parseTerm() {
+        let left = self.parseUnary()
+        while true {
+            let t = self.peek()
+            let op = ""
+            if t["k"] == "op" and (t["v"] == "*" or t["v"] == "/" or t["v"] == "%") {
+                op = self.advance()["v"]
+            } else if t["k"] == "num" or t["k"] == "id" or (t["k"] == "op" and t["v"] == "(") {
+                op = "*"
+            } else {
+                break
+            }
+            let right = self.parseUnary()
+            left = {"t": "bin", "op": op, "a": left, "b": right}
+        }
+        return left
+    }
+
+    fn parseUnary() {
+        if self.isOp("-") {
+            self.advance()
+            return {"t": "neg", "a": self.parseUnary()}
+        }
+        if self.isOp("+") {
+            self.advance()
+            return self.parseUnary()
+        }
+        return self.parsePower()
+    }
+
+    # power := postfix ('^' unary)?   (right associative)
+    fn parsePower() {
+        let base = self.parsePostfix()
+        if self.isOp("^") {
+            self.advance()
+            let exponent = self.parseUnary()
+            return {"t": "bin", "op": "^", "a": base, "b": exponent}
+        }
+        return base
+    }
+
+    fn parsePostfix() {
+        let node = self.parsePrimary()
+        while self.isOp("!") {
+            self.advance()
+            node = {"t": "fact", "a": node}
+        }
+        return node
+    }
+
+    fn parsePrimary() {
+        let t = self.advance()
+        if t["k"] == "num" { return {"t": "num", "v": t["v"]} }
+        if t["k"] == "id" {
+            let name = t["v"]
+            if self.isOp("(") and (name in self.funcNames) {
+                self.advance()
+                let args = []
+                if not self.isOp(")") {
+                    args.push(self.parseExpr())
+                    while self.isOp(",") {
+                        self.advance()
+                        args.push(self.parseExpr())
+                    }
+                }
+                self.expectOp(")")
+                let spec = self.funcNames[name]
+                if len(args) < spec[0] or len(args) > spec[1] {
+                    raise "function '" + name + "' takes " + (spec[0] == spec[1] ? str(spec[0]) : str(spec[0]) + " to " + str(spec[1])) + " argument(s), got " + str(len(args))
+                }
+                return {"t": "call", "f": name, "args": args}
+            }
+            if name in self.funcNames {
+                raise "function '" + name + "' needs parentheses, e.g. " + name + "(x)"
+            }
+            return {"t": "var", "n": name}
+        }
+        if t["k"] == "op" and t["v"] == "(" {
+            let inner = self.parseExpr()
+            self.expectOp(")")
+            return inner
+        }
+        raise "unexpected " + self.describe(t)
+    }
+}
+
+class __Expr {
+    fn init() {
+        self.NAN = INF - INF
+        # name -> [min args, max args]
+        self.FUNCTION_NAMES = {
+            "sin": [1, 1], "cos": [1, 1], "tan": [1, 1], "sec": [1, 1], "csc": [1, 1], "cot": [1, 1],
+            "asin": [1, 1], "acos": [1, 1], "atan": [1, 1], "atan2": [2, 2],
+            "sinh": [1, 1], "cosh": [1, 1], "tanh": [1, 1], "asinh": [1, 1], "acosh": [1, 1], "atanh": [1, 1],
+            "sqrt": [1, 1], "cbrt": [1, 1], "root": [2, 2], "abs": [1, 1], "sign": [1, 1],
+            "exp": [1, 1], "ln": [1, 1], "log": [1, 2], "log2": [1, 1], "log10": [1, 1],
+            "floor": [1, 1], "ceil": [1, 1], "round": [1, 1], "trunc": [1, 1],
+            "min": [1, 99], "max": [1, 99], "pow": [2, 2], "mod": [2, 2], "hypot": [2, 2],
+            "fact": [1, 1], "gamma": [1, 1], "erf": [1, 1], "deg": [1, 1], "rad": [1, 1]
+        }
+        self.CONSTANTS = {"pi": PI, "e": 2.718281828459045, "tau": 2 * PI, "phi": (1 + sqrt(5)) / 2, "inf": INF}
+        self.FUNCS = self.buildFunctions()
+    }
+
+    # ── function table ───────────────────────────────────────────────────
+
+    fn buildFunctions() {
+        let nan = self.NAN
+        let f = {}
+        f["sin"] = fn(a) { return sin(a[0]) }
+        f["cos"] = fn(a) { return cos(a[0]) }
+        f["tan"] = fn(a) { return tan(a[0]) }
+        f["sec"] = fn(a) { return 1 / cos(a[0]) }
+        f["csc"] = fn(a) { return 1 / sin(a[0]) }
+        f["cot"] = fn(a) { return cos(a[0]) / sin(a[0]) }
+        f["asin"] = fn(a) { return asin(a[0]) }
+        f["acos"] = fn(a) { return acos(a[0]) }
+        f["atan"] = fn(a) { return atan(a[0]) }
+        f["atan2"] = fn(a) { return atan2(a[0], a[1]) }
+        f["sinh"] = fn(a) { return Num.sinh(a[0]) }
+        f["cosh"] = fn(a) { return Num.cosh(a[0]) }
+        f["tanh"] = fn(a) { return Num.tanh(a[0]) }
+        f["asinh"] = fn(a) { return Num.asinh(a[0]) }
+        f["acosh"] = fn(a) { return Num.acosh(a[0]) }
+        f["atanh"] = fn(a) { return Num.atanh(a[0]) }
+        f["sqrt"] = fn(a) { return sqrt(a[0]) }
+        f["cbrt"] = fn(a) { return Num.cbrt(a[0]) }
+        f["root"] = fn(a) { return Num.nthRoot(a[0], a[1]) }
+        f["abs"] = fn(a) { return abs(a[0]) }
+        f["sign"] = fn(a) { return Num.sign(a[0]) }
+        f["exp"] = fn(a) { return Num.exp(a[0]) }
+        f["ln"] = fn(a) { return log(a[0]) }
+        f["log"] = fn(a) {
+            if len(a) == 2 { return log(a[0]) / log(a[1]) }
+            return log10(a[0])
+        }
+        f["log2"] = fn(a) { return log2(a[0]) }
+        f["log10"] = fn(a) { return log10(a[0]) }
+        f["floor"] = fn(a) { return floor(a[0]) }
+        f["ceil"] = fn(a) { return ceil(a[0]) }
+        f["round"] = fn(a) { return round(a[0]) }
+        f["trunc"] = fn(a) { return Math.trunc(a[0]) }
+        f["min"] = fn(a) {
+            let m = a[0]
+            for v in a { if v < m { m = v } }
+            return m
+        }
+        f["max"] = fn(a) {
+            let m = a[0]
+            for v in a { if v > m { m = v } }
+            return m
+        }
+        f["pow"] = fn(a) { return pow(a[0], a[1]) }
+        f["mod"] = fn(a) {
+            if a[1] == 0 { return nan }
+            return Num.mod(a[0], a[1])
+        }
+        f["hypot"] = fn(a) { return Math.hypot(a[0], a[1]) }
+        f["fact"] = fn(a) {
+            if a[0] < 0 and a[0] == floor(a[0]) { return nan }
+            return Num.factorial(a[0])
+        }
+        f["gamma"] = fn(a) { return Num.gamma(a[0]) }
+        f["erf"] = fn(a) { return Num.erf(a[0]) }
+        f["deg"] = fn(a) { return a[0] * 180 / PI }
+        f["rad"] = fn(a) { return a[0] * PI / 180 }
+        return f
+    }
+
+    # ── tokenizer ────────────────────────────────────────────────────────
+
+    fn isDigitCode(o) { return o >= 48 and o <= 57 }
+    fn isLetterCode(o) { return (o >= 65 and o <= 90) or (o >= 97 and o <= 122) or o == 95 }
+
+    fn tokenize(src) {
+        let tokens = []
+        let i = 0
+        let n = len(src)
+        while i < n {
+            let ch = src[i]
+            let o = ord(ch)
+            if ch == " " or ch == "\t" or ch == "\n" or ch == "\r" {
+                i = i + 1
+            } else if self.isDigitCode(o) or (ch == "." and i + 1 < n and self.isDigitCode(ord(src[i + 1]))) {
+                let j = i
+                while j < n and self.isDigitCode(ord(src[j])) { j = j + 1 }
+                if j < n and src[j] == "." {
+                    j = j + 1
+                    while j < n and self.isDigitCode(ord(src[j])) { j = j + 1 }
+                }
+                # exponent: e / E followed by digits (optionally signed)
+                if j < n and (src[j] == "e" or src[j] == "E") {
+                    let k = j + 1
+                    if k < n and (src[k] == "+" or src[k] == "-") { k = k + 1 }
+                    if k < n and self.isDigitCode(ord(src[k])) {
+                        while k < n and self.isDigitCode(ord(src[k])) { k = k + 1 }
+                        j = k
+                    }
+                }
+                tokens.push({"k": "num", "v": num(src.slice(i, j))})
+                i = j
+            } else if self.isLetterCode(o) {
+                let j = i
+                while j < n and (self.isLetterCode(ord(src[j])) or self.isDigitCode(ord(src[j]))) { j = j + 1 }
+                tokens.push({"k": "id", "v": src.slice(i, j)})
+                i = j
+            } else if ch == "*" and i + 1 < n and src[i + 1] == "*" {
+                tokens.push({"k": "op", "v": "^"})
+                i = i + 2
+            } else if ch == "+" or ch == "-" or ch == "*" or ch == "/" or ch == "%" or ch == "^" or ch == "(" or ch == ")" or ch == "," or ch == "!" {
+                tokens.push({"k": "op", "v": ch})
+                i = i + 1
+            } else {
+                raise "unexpected character '" + ch + "' in expression"
+            }
+        }
+        return tokens
+    }
+
+    # ── parse ────────────────────────────────────────────────────────────
+
+    # Source text -> syntax tree (dictionaries with a "t" field).
+    fn parse(src) {
+        if type(src) == "dict" { return src }
+        let parser = __ExprParser(self.tokenize(src), self.FUNCTION_NAMES)
+        return parser.parseAll()
+    }
+
+    fn mkNum(v) { return {"t": "num", "v": v} }
+    fn mkVar(n) { return {"t": "var", "n": n} }
+    fn mkBin(op, a, b) { return {"t": "bin", "op": op, "a": a, "b": b} }
+    fn mkNeg(a) { return {"t": "neg", "a": a} }
+    fn mkCall(f, args) { return {"t": "call", "f": f, "args": args} }
+
+    # Names used in the expression that are neither functions nor built-in
+    # constants, in order of first appearance.
+    fn variables(src) {
+        let found = []
+        self.collectVars(self.parse(src), found)
+        return found
+    }
+
+    fn collectVars(node, found) {
+        let t = node["t"]
+        if t == "var" {
+            if not (node["n"] in self.CONSTANTS) and not (node["n"] in found) { found.push(node["n"]) }
+        } else if t == "neg" or t == "fact" {
+            self.collectVars(node["a"], found)
+        } else if t == "bin" {
+            self.collectVars(node["a"], found)
+            self.collectVars(node["b"], found)
+        } else if t == "call" {
+            for a in node["args"] { self.collectVars(a, found) }
+        }
+    }
+
+    # Does the tree mention variable v?
+    fn contains(node, v) {
+        let t = node["t"]
+        if t == "var" { return node["n"] == v }
+        if t == "num" { return false }
+        if t == "neg" or t == "fact" { return self.contains(node["a"], v) }
+        if t == "bin" { return self.contains(node["a"], v) or self.contains(node["b"], v) }
+        for a in node["args"] {
+            if self.contains(a, v) { return true }
+        }
+        return false
+    }
+
+    # ── evaluate ─────────────────────────────────────────────────────────
+
+    fn divide(a, b) {
+        if b == 0 {
+            if a == 0 or isNaN(a) { return self.NAN }
+            return a > 0 ? INF : -INF
+        }
+        return a / b
+    }
+
+    # Turns a tree into a native closure fn(env) -> number, where env is a
+    # dictionary of variable values.
+    fn build(node) {
+        let t = node["t"]
+        let me = self
+        if t == "num" {
+            let v = node["v"]
+            return fn(env) { return v }
+        }
+        if t == "var" {
+            let name = node["n"]
+            let consts = self.CONSTANTS
+            return fn(env) {
+                let v = env.get(name)
+                if v == null {
+                    v = consts.get(name)
+                    if v == null { raise "unknown variable '" + name + "'" }
+                }
+                return v
+            }
+        }
+        if t == "neg" {
+            let inner = self.build(node["a"])
+            return fn(env) { return -inner(env) }
+        }
+        if t == "fact" {
+            let inner = self.build(node["a"])
+            let fact = self.FUNCS["fact"]
+            return fn(env) { return fact([inner(env)]) }
+        }
+        if t == "bin" {
+            let op = node["op"]
+            let l = self.build(node["a"])
+            let r = self.build(node["b"])
+            if op == "+" { return fn(env) { return l(env) + r(env) } }
+            if op == "-" { return fn(env) { return l(env) - r(env) } }
+            if op == "*" { return fn(env) { return l(env) * r(env) } }
+            if op == "/" { return fn(env) { return me.divide(l(env), r(env)) } }
+            if op == "%" {
+                let modFn = self.FUNCS["mod"]
+                return fn(env) { return modFn([l(env), r(env)]) }
+            }
+            if op == "^" { return fn(env) { return pow(l(env), r(env)) } }
+            raise "unknown operator " + op
+        }
+        # call
+        let impl = self.FUNCS[node["f"]]
+        let argFns = []
+        for a in node["args"] { argFns.push(self.build(a)) }
+        if len(argFns) == 1 {
+            let a0 = argFns[0]
+            return fn(env) { return impl([a0(env)]) }
+        }
+        if len(argFns) == 2 {
+            let a0 = argFns[0]
+            let a1 = argFns[1]
+            return fn(env) { return impl([a0(env), a1(env)]) }
+        }
+        return fn(env) {
+            let vals = []
+            for g in argFns { vals.push(g(env)) }
+            return impl(vals)
+        }
+    }
+
+    fn evaluate(src, vars) {
+        if vars == null { vars = {} }
+        return self.build(self.parse(src))(vars)
+    }
+
+    # Returns a function of the named variable(s) that evaluates `src`.
+    #   Expr.compile("x^2 + a", "x", {"a": 1})        -> fn(x)
+    #   Expr.compile("x * y", ["x", "y"])             -> fn(x, y)   (up to 3 names)
+    # `fixed` holds values for any other symbols.
+    fn compile(src, names, fixed) {
+        let closure = self.build(self.parse(src))
+        let env = {}
+        if fixed != null {
+            for k in fixed.keys() { env[k] = fixed[k] }
+        }
+        if type(names) == "string" {
+            let n0 = names
+            return fn(x) {
+                env[n0] = x
+                return closure(env)
+            }
+        }
+        if len(names) == 1 {
+            let m0 = names[0]
+            return fn(x) {
+                env[m0] = x
+                return closure(env)
+            }
+        }
+        if len(names) == 2 {
+            let p0 = names[0]
+            let p1 = names[1]
+            return fn(x, y) {
+                env[p0] = x
+                env[p1] = y
+                return closure(env)
+            }
+        }
+        if len(names) == 3 {
+            let q0 = names[0]
+            let q1 = names[1]
+            let q2 = names[2]
+            return fn(x, y, z) {
+                env[q0] = x
+                env[q1] = y
+                env[q2] = z
+                return closure(env)
+            }
+        }
+        raise "compile: at most 3 variables (use compileVector for more)"
+    }
+
+    # fn(v) taking an array, v[i] bound to names[i].
+    fn compileVector(src, names, fixed) {
+        let closure = self.build(self.parse(src))
+        let env = {}
+        if fixed != null {
+            for k in fixed.keys() { env[k] = fixed[k] }
+        }
+        let count = len(names)
+        return fn(v) {
+            for i in range(count) { env[names[i]] = v[i] }
+            return closure(env)
+        }
+    }
+
+    # ── display ──────────────────────────────────────────────────────────
+
+    fn prec(node) {
+        let t = node["t"]
+        if t == "num" { return node["v"] < 0 ? 3 : 6 }
+        if t == "var" or t == "call" { return 6 }
+        if t == "fact" { return 5 }
+        if t == "neg" { return 3 }
+        let op = node["op"]
+        if op == "+" or op == "-" { return 1 }
+        if op == "^" { return 4 }
+        return 2
+    }
+
+    fn wrap(text, needs) {
+        if needs { return "(" + text + ")" }
+        return text
+    }
+
+    # Tree (or source text) -> readable formula.
+    fn show(src, digits) {
+        if digits == null { digits = 10 }
+        return self.render(self.parse(src), digits)
+    }
+
+    fn render(node, digits) {
+        let t = node["t"]
+        if t == "num" { return Num.fmt(node["v"], digits) }
+        if t == "var" { return node["n"] }
+        if t == "neg" {
+            return "-" + self.wrap(self.render(node["a"], digits), self.prec(node["a"]) < 3)
+        }
+        if t == "fact" {
+            return self.wrap(self.render(node["a"], digits), self.prec(node["a"]) < 6) + "!"
+        }
+        if t == "call" {
+            let parts = []
+            for a in node["args"] { parts.push(self.render(a, digits)) }
+            return node["f"] + "(" + parts.join(", ") + ")"
+        }
+        let op = node["op"]
+        let p = self.prec(node)
+        let a = node["a"]
+        let b = node["b"]
+        let ls = self.render(a, digits)
+        let rs = self.render(b, digits)
+        if op == "^" {
+            return self.wrap(ls, self.prec(a) <= p) + "^" + self.wrap(rs, self.prec(b) < p)
+        }
+        if op == "*" {
+            ls = self.wrap(ls, self.prec(a) < p)
+            rs = self.wrap(rs, self.prec(b) < p)
+            if a["t"] == "num" and a["v"] >= 0 and self.glues(b) { return ls + rs }
+            return ls + "*" + rs
+        }
+        if op == "/" or op == "%" {
+            return self.wrap(ls, self.prec(a) < p) + " " + op + " " + self.wrap(rs, self.prec(b) <= p)
+        }
+        if op == "-" {
+            return self.wrap(ls, self.prec(a) < p) + " - " + self.wrap(rs, self.prec(b) <= p)
+        }
+        return self.wrap(ls, self.prec(a) < p) + " + " + self.wrap(rs, self.prec(b) < p)
+    }
+
+    # Can a numeric coefficient be written right before this node ("2x", "3sin(x)",
+    # "6(x + 1)^2", "3x^2*y")?
+    fn glues(node) {
+        let t = node["t"]
+        if t == "var" { return not (node["n"].startsWith("e") or node["n"].startsWith("E")) }
+        if t == "call" { return true }
+        if t == "bin" {
+            let op = node["op"]
+            if op == "^" { return node["a"]["t"] != "num" and node["a"]["t"] != "neg" and node["a"]["t"] != "fact" and self.glues(node["a"]) }
+            if op == "+" or op == "-" { return true }
+            if op == "*" { return self.glues(node["a"]) }
+        }
+        return false
+    }
+
+    # Ordering weight used to keep function calls behind plain factors.
+    fn weight(node) {
+        let t = node["t"]
+        if t == "num" { return 0 }
+        if t == "var" or t == "fact" { return 1 }
+        if t == "neg" { return self.weight(node["a"]) }
+        if t == "call" { return 3 }
+        return max(self.weight(node["a"]), self.weight(node["b"]))
+    }
+
+    # ── simplify ─────────────────────────────────────────────────────────
+
+    fn same(a, b) { return self.render(a, 12) == self.render(b, 12) }
+
+    fn isNum(node, v) { return node["t"] == "num" and node["v"] == v }
+
+    # Folds constants and applies algebraic identities until nothing changes.
+    # Accepts text or a tree; returns text.
+    fn simplify(src) { return self.render(self.simplifyNode(self.parse(src)), 12) }
+
+    fn simplifyNode(node) {
+        let cur = node
+        let key = self.render(cur, 12)
+        for pass in range(12) {
+            cur = self.simp(cur)
+            let next = self.render(cur, 12)
+            if next == key { break }
+            key = next
+        }
+        return cur
+    }
+
+    fn simp(node) {
+        let t = node["t"]
+        if t == "num" or t == "var" { return node }
+        if t == "neg" {
+            let a = self.simp(node["a"])
+            if a["t"] == "num" { return self.mkNum(-a["v"]) }
+            if a["t"] == "neg" { return a["a"] }
+            return self.mkNeg(a)
+        }
+        if t == "fact" {
+            let a = self.simp(node["a"])
+            if a["t"] == "num" and a["v"] >= 0 and a["v"] == floor(a["v"]) and a["v"] <= 170 {
+                return self.mkNum(Num.factorial(a["v"]))
+            }
+            return {"t": "fact", "a": a}
+        }
+        if t == "call" {
+            let args = []
+            let allNum = true
+            for a in node["args"] {
+                let s = self.simp(a)
+                if s["t"] != "num" { allNum = false }
+                args.push(s)
+            }
+            if allNum {
+                let vals = args.map(fn(n) { return n["v"] })
+                let r = self.FUNCS[node["f"]](vals)
+                # only fold when the result is a whole number (keeps sqrt(2) symbolic)
+                if Num.isFinite(r) and abs(r) < 1e15 and abs(r - round(r)) < 1e-12 {
+                    return self.mkNum(round(r))
+                }
+            }
+            return self.mkCall(node["f"], args)
+        }
+        let op = node["op"]
+        let a = self.simp(node["a"])
+        let b = self.simp(node["b"])
+        if a["t"] == "num" and b["t"] == "num" {
+            let x = a["v"]
+            let y = b["v"]
+            if op == "+" { return self.mkNum(x + y) }
+            if op == "-" { return self.mkNum(x - y) }
+            if op == "*" { return self.mkNum(x * y) }
+            if op == "/" and y != 0 {
+                let q = x / y
+                if q == round(q) and abs(q) < 1e15 { return self.mkNum(q) }
+            }
+            if op == "^" and (x >= 0 or y == floor(y)) and not (x == 0 and y < 0) {
+                let r = pow(x, y)
+                if Num.isFinite(r) and abs(r) < 1e15 and abs(r - round(r)) < 1e-12 { return self.mkNum(round(r)) }
+            }
+            return self.mkBin(op, a, b)
+        }
+        if op == "+" {
+            if self.isNum(a, 0) { return b }
+            if self.isNum(b, 0) { return a }
+            if b["t"] == "neg" { return self.mkBin("-", a, b["a"]) }
+            if a["t"] == "neg" { return self.mkBin("-", b, a["a"]) }
+            if b["t"] == "num" and b["v"] < 0 { return self.mkBin("-", a, self.mkNum(-b["v"])) }
+            if self.same(a, b) { return self.mkBin("*", self.mkNum(2), a) }
+            return self.mkBin("+", a, b)
+        }
+        if op == "-" {
+            if self.isNum(b, 0) { return a }
+            if self.isNum(a, 0) { return self.mkNeg(b) }
+            if b["t"] == "neg" { return self.mkBin("+", a, b["a"]) }
+            if b["t"] == "num" and b["v"] < 0 { return self.mkBin("+", a, self.mkNum(-b["v"])) }
+            if self.same(a, b) { return self.mkNum(0) }
+            return self.mkBin("-", a, b)
+        }
+        if op == "*" {
+            if self.isNum(a, 0) or self.isNum(b, 0) { return self.mkNum(0) }
+            if self.isNum(a, 1) { return b }
+            if self.isNum(b, 1) { return a }
+            if self.isNum(a, -1) { return self.mkNeg(b) }
+            if self.isNum(b, -1) { return self.mkNeg(a) }
+            if a["t"] == "neg" { return self.mkNeg(self.mkBin("*", a["a"], b)) }
+            if b["t"] == "neg" { return self.mkNeg(self.mkBin("*", a, b["a"])) }
+            if a["t"] == "bin" and a["op"] == "/" { return self.mkBin("/", self.mkBin("*", a["a"], b), a["b"]) }
+            if b["t"] == "bin" and b["op"] == "/" { return self.mkBin("/", self.mkBin("*", a, b["a"]), b["b"]) }
+            if b["t"] == "num" { return self.mkBin("*", b, a) }
+            if a["t"] == "num" and b["t"] == "bin" and b["op"] == "*" and b["a"]["t"] == "num" {
+                return self.mkBin("*", self.mkNum(a["v"] * b["a"]["v"]), b["b"])
+            }
+            if a["t"] != "num" and b["t"] == "bin" and b["op"] == "*" and b["a"]["t"] == "num" {
+                return self.mkBin("*", b["a"], self.mkBin("*", a, b["b"]))
+            }
+            if a["t"] == "bin" and a["op"] == "*" and a["a"]["t"] == "num" and b["t"] == "num" {
+                return self.mkBin("*", self.mkNum(a["a"]["v"] * b["v"]), a["b"])
+            }
+            if self.same(a, b) { return self.mkBin("^", a, self.mkNum(2)) }
+            # x * x^n, x^n * x, x^m * x^n
+            let ba = a
+            let ea = self.mkNum(1)
+            if a["t"] == "bin" and a["op"] == "^" and a["b"]["t"] == "num" {
+                ba = a["a"]
+                ea = a["b"]
+            }
+            let bb = b
+            let eb = self.mkNum(1)
+            if b["t"] == "bin" and b["op"] == "^" and b["b"]["t"] == "num" {
+                bb = b["a"]
+                eb = b["b"]
+            }
+            if (ba["t"] == "var" or ba["t"] == "call") and self.same(ba, bb) {
+                return self.mkBin("^", ba, self.mkNum(ea["v"] + eb["v"]))
+            }
+            # keep function calls after plain factors: cos(x)*2x -> 2x*cos(x)
+            if self.weight(a) > self.weight(b) { return self.mkBin("*", b, a) }
+            return self.mkBin("*", a, b)
+        }
+        if op == "/" {
+            if self.isNum(b, 1) { return a }
+            if self.isNum(a, 0) and not self.isNum(b, 0) { return self.mkNum(0) }
+            if a["t"] == "neg" { return self.mkNeg(self.mkBin("/", a["a"], b)) }
+            if b["t"] == "neg" { return self.mkNeg(self.mkBin("/", a, b["a"])) }
+            if self.same(a, b) and not self.isNum(b, 0) { return self.mkNum(1) }
+            return self.mkBin("/", a, b)
+        }
+        if op == "^" {
+            if self.isNum(b, 1) { return a }
+            if self.isNum(b, 0) { return self.mkNum(1) }
+            if self.isNum(a, 1) { return self.mkNum(1) }
+            if self.isNum(a, 0) and b["t"] == "num" and b["v"] > 0 { return self.mkNum(0) }
+            return self.mkBin("^", a, b)
+        }
+        return self.mkBin(op, a, b)
+    }
+
+    # ── differentiate ────────────────────────────────────────────────────
+
+    # d/dv of a formula (text or tree); returns simplified text.
+    # `order` defaults to 1.
+    fn derivative(src, v, order) {
+        if order == null { order = 1 }
+        let node = self.parse(src)
+        for k in range(order) { node = self.simplifyNode(self.diff(node, v)) }
+        return self.render(node, 12)
+    }
+
+    fn derivativeNode(src, v) {
+        return self.simplifyNode(self.diff(self.parse(src), v))
+    }
+
+    fn diff(node, v) {
+        let t = node["t"]
+        if t == "num" { return self.mkNum(0) }
+        if t == "var" { return self.mkNum(node["n"] == v ? 1 : 0) }
+        if not self.contains(node, v) { return self.mkNum(0) }
+        if t == "neg" { return self.mkNeg(self.diff(node["a"], v)) }
+        if t == "fact" { raise "cannot differentiate a factorial" }
+        if t == "bin" {
+            let op = node["op"]
+            let a = node["a"]
+            let b = node["b"]
+            if op == "+" or op == "-" {
+                return self.mkBin(op, self.diff(a, v), self.diff(b, v))
+            }
+            if op == "*" {
+                return self.mkBin("+", self.mkBin("*", self.diff(a, v), b), self.mkBin("*", a, self.diff(b, v)))
+            }
+            if op == "/" {
+                let top = self.mkBin("-", self.mkBin("*", self.diff(a, v), b), self.mkBin("*", a, self.diff(b, v)))
+                return self.mkBin("/", top, self.mkBin("^", b, self.mkNum(2)))
+            }
+            if op == "^" { return self.diffPower(a, b, v) }
+            raise "cannot differentiate the '" + op + "' operator"
+        }
+        return self.diffCall(node, v)
+    }
+
+    fn diffPower(a, b, v) {
+        if not self.contains(b, v) {
+            # d(a^n) = n a^(n-1) a'
+            let n1 = self.mkBin("-", b, self.mkNum(1))
+            return self.mkBin("*", self.mkBin("*", b, self.mkBin("^", a, n1)), self.diff(a, v))
+        }
+        if not self.contains(a, v) {
+            # d(c^g) = c^g ln(c) g'
+            return self.mkBin("*", self.mkBin("*", self.mkBin("^", a, b), self.mkCall("ln", [a])), self.diff(b, v))
+        }
+        # d(a^b) = a^b (b' ln a + b a'/a)
+        let inner = self.mkBin("+", self.mkBin("*", self.diff(b, v), self.mkCall("ln", [a])), self.mkBin("/", self.mkBin("*", b, self.diff(a, v)), a))
+        return self.mkBin("*", self.mkBin("^", a, b), inner)
+    }
+
+    fn diffCall(node, v) {
+        let f = node["f"]
+        let args = node["args"]
+        let u = args[0]
+        let du = self.diff(u, v)
+        let one = self.mkNum(1)
+        let two = self.mkNum(2)
+        let r = null
+        if f == "sin" { r = self.mkCall("cos", [u]) } else if f == "cos" { r = self.mkNeg(self.mkCall("sin", [u])) } else if f == "tan" { r = self.mkBin("/", one, self.mkBin("^", self.mkCall("cos", [u]), two)) } else if f == "sec" { r = self.mkBin("*", self.mkCall("sec", [u]), self.mkCall("tan", [u])) } else if f == "csc" { r = self.mkNeg(self.mkBin("*", self.mkCall("csc", [u]), self.mkCall("cot", [u]))) } else if f == "cot" { r = self.mkNeg(self.mkBin("/", one, self.mkBin("^", self.mkCall("sin", [u]), two))) } else if f == "asin" { r = self.mkBin("/", one, self.mkCall("sqrt", [self.mkBin("-", one, self.mkBin("^", u, two))])) } else if f == "acos" { r = self.mkNeg(self.mkBin("/", one, self.mkCall("sqrt", [self.mkBin("-", one, self.mkBin("^", u, two))]))) } else if f == "atan" { r = self.mkBin("/", one, self.mkBin("+", one, self.mkBin("^", u, two))) } else if f == "sinh" { r = self.mkCall("cosh", [u]) } else if f == "cosh" { r = self.mkCall("sinh", [u]) } else if f == "tanh" { r = self.mkBin("/", one, self.mkBin("^", self.mkCall("cosh", [u]), two)) } else if f == "asinh" { r = self.mkBin("/", one, self.mkCall("sqrt", [self.mkBin("+", self.mkBin("^", u, two), one)])) } else if f == "acosh" { r = self.mkBin("/", one, self.mkCall("sqrt", [self.mkBin("-", self.mkBin("^", u, two), one)])) } else if f == "atanh" { r = self.mkBin("/", one, self.mkBin("-", one, self.mkBin("^", u, two))) } else if f == "exp" { r = self.mkCall("exp", [u]) } else if f == "ln" { r = self.mkBin("/", one, u) } else if f == "log10" { r = self.mkBin("/", one, self.mkBin("*", u, self.mkCall("ln", [self.mkNum(10)]))) } else if f == "log2" { r = self.mkBin("/", one, self.mkBin("*", u, self.mkCall("ln", [two]))) } else if f == "log" {
+            if len(args) == 1 {
+                r = self.mkBin("/", one, self.mkBin("*", u, self.mkCall("ln", [self.mkNum(10)])))
+            } else {
+                if self.contains(args[1], v) { raise "cannot differentiate log with a variable base" }
+                r = self.mkBin("/", one, self.mkBin("*", u, self.mkCall("ln", [args[1]])))
+            }
+        } else if f == "sqrt" { r = self.mkBin("/", one, self.mkBin("*", two, self.mkCall("sqrt", [u]))) } else if f == "cbrt" { r = self.mkBin("/", one, self.mkBin("*", self.mkNum(3), self.mkBin("^", self.mkCall("cbrt", [u]), two))) } else if f == "abs" { r = self.mkCall("sign", [u]) } else if f == "deg" { return self.mkBin("*", self.mkNum(180 / PI), du) } else if f == "rad" { return self.mkBin("*", self.mkNum(PI / 180), du) } else if f == "pow" { return self.diffPower(args[0], args[1], v) } else if f == "hypot" {
+            let sq = self.mkBin("+", self.mkBin("^", args[0], two), self.mkBin("^", args[1], two))
+            let top = self.mkBin("+", self.mkBin("*", args[0], self.diff(args[0], v)), self.mkBin("*", args[1], self.diff(args[1], v)))
+            return self.mkBin("/", top, self.mkCall("sqrt", [sq]))
+        } else if f == "erf" {
+            let g = self.mkCall("exp", [self.mkNeg(self.mkBin("^", u, two))])
+            r = self.mkBin("*", self.mkBin("/", self.mkNum(2), self.mkCall("sqrt", [self.mkVar("pi")])), g)
+        } else if f == "root" {
+            if self.contains(args[1], v) { raise "cannot differentiate root with a variable index" }
+            return self.diffPower(args[0], self.mkBin("/", one, args[1]), v)
+        } else if f == "min" or f == "max" or f == "floor" or f == "ceil" or f == "round" or f == "trunc" or f == "sign" or f == "mod" or f == "atan2" or f == "fact" or f == "gamma" {
+            raise "cannot differentiate '" + f + "'"
+        } else { raise "cannot differentiate '" + f + "'" }
+        return self.mkBin("*", r, du)
+    }
+}
+
+Expr = __Expr()
