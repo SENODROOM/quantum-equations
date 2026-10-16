@@ -96,5 +96,3 @@ describe("Frac", fn() {
         expect(Frac.showAll(half)).toEqual(["1", "2"])
     })
 })
-
-Test.report()

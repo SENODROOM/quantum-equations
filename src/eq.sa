@@ -411,7 +411,7 @@ class __Eq {
         let label = variable
         if a > 0 { label = "(" + variable + " - " + Num.fmt(a, 6) + ")" }
         if a < 0 { label = "(" + variable + " + " + Num.fmt(-a, 6) + ")" }
-        return {"coefficients": coeffs, "text": Poly.show(coeffs.slice(0).reverse(), label, 6)}
+        return {"coefficients": coeffs, "text": Poly.showAscending(coeffs, label, 6)}
     }
 
     # Do two formulas agree at a spread of sample points?

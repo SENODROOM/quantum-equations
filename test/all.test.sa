@@ -1,0 +1,11 @@
+# Runs every suite: `qpm run test` (or see package.json "scripts").
+# @use quantum-test
+# @use ./core.test.sa
+# @use ./algebra.test.sa
+# @use ./solve.test.sa
+# @use ./calculus.test.sa
+# @use ./exact.test.sa
+# @use ./expr.test.sa
+# @use ./eq.test.sa
+
+Test.report()

@@ -1,0 +1,29 @@
+# quantum-equations — a math library for Quantum (.sa), from simple to complex equations
+#
+# Bundle entry: pulls every module in dependency order. Use it from your own
+# program with a `# @use` directive (see README.md), or run the pre-bundled
+# single file dist/quantum-equations.sa.
+#
+#   Globals        Module            What it solves
+#   ─────────────  ────────────────  ─────────────────────────────────────────
+#   Num            src/core.sa       gamma, erf, formatting, hyperbolics, gcd
+#   Complex        src/complex.sa    complex arithmetic, roots, powers
+#   LinAlg         src/linalg.sa     matrices, A x = b, rank, eigenvalues
+#   Poly           src/poly.sa       polynomial algebra, roots, fitting
+#   Calc           src/calculus.sa   derivatives, integrals, limits, ODEs
+#   Solve          src/solve.sa      quadratic/cubic, Brent/Newton, systems
+#   NumTheory      src/numtheory.sa  Diophantine, congruences, CRT, Pell
+#   Frac           src/fraction.sa   exact rationals and exact linear systems
+#   Expr, Eq       src/expr.sa       formulas as text: evaluate, simplify,
+#                  src/eq.sa         differentiate, solve equations & systems
+
+# @use ./src/core.sa
+# @use ./src/complex.sa
+# @use ./src/linalg.sa
+# @use ./src/poly.sa
+# @use ./src/calculus.sa
+# @use ./src/solve.sa
+# @use ./src/numtheory.sa
+# @use ./src/fraction.sa
+# @use ./src/expr.sa
+# @use ./src/eq.sa

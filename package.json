@@ -3,18 +3,45 @@
   "version": "1.0.0",
   "description": "Equation toolkit for Quantum: expression parser and symbolic derivatives, linear/quadratic/cubic/polynomial solvers, root finding, linear and nonlinear systems, calculus, ODEs, complex numbers, matrices, fractions and number-theory equations.",
   "main": "index.sa",
-  "keywords": ["quantum", "sa", "math", "equations", "algebra", "calculus", "solver", "polynomial", "matrix"],
+  "keywords": [
+    "quantum",
+    "sa",
+    "math",
+    "equations",
+    "algebra",
+    "calculus",
+    "solver",
+    "polynomial",
+    "matrix"
+  ],
   "license": "MIT",
-  "files": ["index.sa", "src/", "dist/", "README.md"],
+  "files": [
+    "index.sa",
+    "src/",
+    "dist/",
+    "README.md"
+  ],
   "scripts": {
     "build": "(if not exist dist mkdir dist) && qrun C:/QuantumLogicsLabs/QuantumLanguage/compiler/qpmexamples/quantum-bundle/bin/bundle.sa",
     "test": "(if not exist build mkdir build) && qrun C:/QuantumLogicsLabs/QuantumLanguage/compiler/qpmexamples/quantum-bundle/bin/bundle.sa && qrun build/test.sa"
   },
   "quantum": {
-    "paths": ["C:/QuantumLogicsLabs/QuantumLanguage/compiler/qpmexamples"],
+    "paths": [
+      "C:/QuantumLogicsLabs/QuantumLanguage/compiler/qpmexamples"
+    ],
     "bundles": [
-      { "entry": "index.sa", "out": "dist/quantum-equations.sa" },
-      { "entry": "test/all.test.sa", "out": "build/test.sa" }
+      {
+        "entry": "index.sa",
+        "out": "dist/quantum-equations.sa"
+      },
+      {
+        "entry": "test/all.test.sa",
+        "out": "build/test.sa"
+      },
+      {
+        "entry": "examples/demo.sa",
+        "out": "build/demo.sa"
+      }
     ]
   }
 }

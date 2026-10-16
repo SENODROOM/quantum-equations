@@ -593,6 +593,68 @@ class __Expr {
         return cur
     }
 
+    # Gathers like terms in a sum: 2x + y + 3x - 1 + 4  ->  5x + y + 3
+    fn collect(node) {
+        let items = []
+        self.flatten(node, 1, items)
+        let constant = 0
+        let out = []
+        let index = {}
+        for it in items {
+            if it["t"] == null {
+                constant = constant + it["c"]
+            } else {
+                let key = self.render(it["t"], 12)
+                if key in index {
+                    out[index[key]]["c"] = out[index[key]]["c"] + it["c"]
+                } else {
+                    index[key] = len(out)
+                    out.push({"c": it["c"], "t": it["t"]})
+                }
+            }
+        }
+        let live = []
+        for e in out {
+            if e["c"] != 0 { live.push(e) }
+        }
+        let result = null
+        if constant != 0 and (len(live) == 0 or live[0]["c"] < 0) {
+            result = self.mkNum(constant)
+            constant = 0
+        }
+        for e in live {
+            let mag = abs(e["c"])
+            let piece = mag == 1 ? e["t"] : self.mkBin("*", self.mkNum(mag), e["t"])
+            if result == null {
+                result = e["c"] < 0 ? self.mkNeg(piece) : piece
+            } else {
+                result = self.mkBin(e["c"] < 0 ? "-" : "+", result, piece)
+            }
+        }
+        if constant != 0 {
+            result = self.mkBin(constant < 0 ? "-" : "+", result, self.mkNum(abs(constant)))
+        }
+        if result == null { return self.mkNum(0) }
+        return result
+    }
+
+    # Splits a sum into (coefficient, term) pieces; term is null for constants.
+    fn flatten(node, sign, items) {
+        let t = node["t"]
+        if t == "bin" and (node["op"] == "+" or node["op"] == "-") {
+            self.flatten(node["a"], sign, items)
+            self.flatten(node["b"], node["op"] == "+" ? sign : -sign, items)
+        } else if t == "neg" {
+            self.flatten(node["a"], -sign, items)
+        } else if t == "num" {
+            items.push({"c": sign * node["v"], "t": null})
+        } else if t == "bin" and node["op"] == "*" and node["a"]["t"] == "num" {
+            items.push({"c": sign * node["a"]["v"], "t": node["b"]})
+        } else {
+            items.push({"c": sign, "t": node})
+        }
+    }
+
     fn simp(node) {
         let t = node["t"]
         if t == "num" or t == "var" { return node }
@@ -645,6 +707,10 @@ class __Expr {
                 if Num.isFinite(r) and abs(r) < 1e15 and abs(r - round(r)) < 1e-12 { return self.mkNum(round(r)) }
             }
             return self.mkBin(op, a, b)
+        }
+        if op == "+" or op == "-" {
+            let combined = self.collect(self.mkBin(op, a, b))
+            if self.render(combined, 12) != self.render(self.mkBin(op, a, b), 12) { return combined }
         }
         if op == "+" {
             if self.isNum(a, 0) { return b }
@@ -710,6 +776,11 @@ class __Expr {
             if a["t"] == "neg" { return self.mkNeg(self.mkBin("/", a["a"], b)) }
             if b["t"] == "neg" { return self.mkNeg(self.mkBin("/", a, b["a"])) }
             if self.same(a, b) and not self.isNum(b, 0) { return self.mkNum(1) }
+            # 6 / (3x) -> 2 / x  (only when the coefficients divide evenly)
+            if a["t"] == "num" and b["t"] == "bin" and b["op"] == "*" and b["a"]["t"] == "num" and b["a"]["v"] != 0 {
+                let ratio = a["v"] / b["a"]["v"]
+                if ratio == round(ratio) { return self.mkBin("/", self.mkNum(ratio), b["b"]) }
+            }
             return self.mkBin("/", a, b)
         }
         if op == "^" {

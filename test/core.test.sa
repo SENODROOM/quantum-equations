@@ -77,5 +77,3 @@ describe("Complex", fn() {
         expect(Complex.simplify(Complex.make(2, 1e-15))).toBe(2)
     })
 })
-
-Test.report()

@@ -347,6 +347,33 @@ class __Poly {
 
     # ── display ──────────────────────────────────────────────────────────
 
+    # Ascending powers, e.g. for series: [1, 2, 0, 5] -> "1 + 2x + 5x^3"
+    fn showAscending(coeffs, variable, digits) {
+        if variable == null { variable = "x" }
+        if digits == null { digits = 6 }
+        let out = ""
+        for k in range(len(coeffs)) {
+            let c = coeffs[k]
+            if abs(c) < 1e-14 { continue }
+            let mag = abs(c)
+            let body = ""
+            if k == 0 {
+                body = Num.fmt(mag, digits)
+            } else {
+                if abs(mag - 1) > 1e-14 { body = Num.fmt(mag, digits) }
+                body = body + variable
+                if k > 1 { body = body + "^" + str(k) }
+            }
+            if out == "" {
+                out = (c < 0 ? "-" : "") + body
+            } else {
+                out = out + (c < 0 ? " - " : " + ") + body
+            }
+        }
+        if out == "" { return "0" }
+        return out
+    }
+
     # [1, -3, 2] -> "x^2 - 3x + 2"
     fn show(p, variable, digits) {
         if variable == null { variable = "x" }

@@ -137,5 +137,3 @@ describe("Poly", fn() {
         expect(f[2]).toBeCloseTo(1, 8)
     })
 })
-
-Test.report()

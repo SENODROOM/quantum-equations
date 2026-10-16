@@ -115,5 +115,3 @@ describe("Solve systems", fn() {
         expect(s[0] * s[1]).toBeCloseTo(6, 8)
     })
 })
-
-Test.report()
