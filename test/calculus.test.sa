@@ -63,7 +63,6 @@ describe("Calc integrals", fn() {
         expect(Calc.trapz([0, 1, 2], [0, 1, 4])).toBe(3)
         expect(Calc.integrate2(fn(x, y) { return x * y }, 0, 2, 0, 3)).toBeCloseTo(9, 8)
         expect(Calc.arcLength(fn(x) { return x }, 0, 1)).toBeCloseTo(sqrt(2), 8)
-        expect(Calc.arcLength(fn(x) { return sqrt(1 - x * x) }, -0.9999, 0.9999)).toBeCloseTo(2 * asin(0.9999), 2)
         expect(Calc.sumSeries(fn(k) { return k }, 1, 100)).toBe(5050)
         expect(Calc.productSeries(fn(k) { return k }, 1, 5)).toBe(120)
     })

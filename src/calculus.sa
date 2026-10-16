@@ -164,7 +164,7 @@ class __Calc {
         let m = (a + b) / 2
         let fm = f(m)
         let whole = (b - a) / 6 * (fa + 4 * fm + fb)
-        return self.adaptiveStep(f, a, b, fa, fm, fb, whole, tol, 40)
+        return self.adaptiveStep(f, a, b, fa, fm, fb, whole, tol, 20)
     }
 
     fn adaptiveStep(f, a, b, fa, fm, fb, whole, tol, depth) {
@@ -176,7 +176,7 @@ class __Calc {
         let left = (m - a) / 6 * (fa + 4 * flm + fm)
         let right = (b - m) / 6 * (fm + 4 * frm + fb)
         let delta = left + right - whole
-        if depth <= 0 or abs(delta) <= 15 * tol {
+        if depth <= 0 or isNaN(delta) or abs(delta) <= 15 * tol {
             return left + right + delta / 15
         }
         return self.adaptiveStep(f, a, m, fa, flm, fm, left, tol / 2, depth - 1) + self.adaptiveStep(f, m, b, fm, frm, fb, right, tol / 2, depth - 1)
