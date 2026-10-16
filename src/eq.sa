@@ -40,7 +40,7 @@ class __Eq {
     # ── equations ────────────────────────────────────────────────────────
 
     # "lhs = rhs" -> {"lhs", "rhs"}; text without "=" is taken as "... = 0".
-    fn splitEquation(src) {
+    fn sidesOf(src) {
         let parts = src.split("=")
         if len(parts) == 1 { return {"lhs": src, "rhs": "0"} }
         if len(parts) != 2 or parts[0].trim() == "" or parts[1].trim() == "" {
@@ -51,14 +51,14 @@ class __Eq {
 
     # Tree for lhs - rhs.
     fn residual(src) {
-        let sides = self.splitEquation(src)
+        let sides = self.sidesOf(src)
         return Expr.mkBin("-", Expr.parse(sides["lhs"]), Expr.parse(sides["rhs"]))
     }
 
     # Does the equation hold (within tolerance) for these values?
     fn check(src, vars, tol) {
         if tol == null { tol = 1e-9 }
-        let sides = self.splitEquation(src)
+        let sides = self.sidesOf(src)
         let l = Expr.evaluate(sides["lhs"], vars)
         let r = Expr.evaluate(sides["rhs"], vars)
         return {"holds": abs(l - r) <= tol * max(1, abs(l), abs(r)), "lhs": l, "rhs": r}
