@@ -23,7 +23,8 @@
   ],
   "scripts": {
     "build": "(if not exist dist mkdir dist) && qrun C:/QuantumLogicsLabs/QuantumLanguage/compiler/qpmexamples/quantum-bundle/bin/bundle.sa",
-    "test": "(if not exist build mkdir build) && qrun C:/QuantumLogicsLabs/QuantumLanguage/compiler/qpmexamples/quantum-bundle/bin/bundle.sa && qrun build/test.sa"
+    "test": "(if not exist build mkdir build) && qrun C:/QuantumLogicsLabs/QuantumLanguage/compiler/qpmexamples/quantum-bundle/bin/bundle.sa && qrun build/test.sa",
+    "start": "qrun index.sa"
   },
   "quantum": {
     "paths": [
@@ -43,5 +44,14 @@
         "out": "build/demo.sa"
       }
     ]
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SENODROOM/quantum-equations.git"
+  },
+  "author": "Muhammad Saad Amin",
+  "bugs": {
+    "url": "https://github.com/SENODROOM/quantum-equations/issues"
+  },
+  "homepage": "https://github.com/SENODROOM/quantum-equations#readme"
 }
